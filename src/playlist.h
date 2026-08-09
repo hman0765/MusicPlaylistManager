@@ -5,8 +5,11 @@
 
 struct Track
 {
-    std::wstring path;
     std::wstring title;
+    std::wstring artist;
+    std::wstring album;
+    std::wstring duration;
+    std::wstring path;
 };
 
 struct Playlist
@@ -18,4 +21,5 @@ struct Playlist
 };
 
 bool IsSupportedAudioPath(const std::wstring& path);
-void AddTrack(Playlist& playlist, const std::wstring& path);
+Track CreateTrackFromFile(const std::wstring& path);
+void AddTrack(Playlist& playlist, Track track);

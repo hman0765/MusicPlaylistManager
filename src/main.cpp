@@ -15,6 +15,11 @@ constexpr wchar_t WindowClassName[] = L"MusicPlaylistManagerWindow";
 constexpr wchar_t WindowTitle[] = L"Music Playlist Manager";
 constexpr int SplitterWidth = 6;
 constexpr int MinimumPaneWidth = 120;
+constexpr int TitleColumnWidth = 180;
+constexpr int ArtistColumnWidth = 140;
+constexpr int AlbumColumnWidth = 160;
+constexpr int DurationColumnWidth = 85;
+constexpr int MinimumPathColumnWidth = 240;
 
 HWND playlistListView = nullptr;
 HWND trackListView = nullptr;
@@ -24,14 +29,37 @@ int splitterDragOffset = 0;
 
 Playlist currentPlaylist{L"New Playlist", L"", {}, false};
 
-void InsertColumn(HWND listView, const wchar_t* heading, int width)
+class ComApartment
+{
+public:
+    ComApartment()
+        : initialized(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
+    {
+    }
+
+    ~ComApartment()
+    {
+        if (initialized)
+        {
+            CoUninitialize();
+        }
+    }
+
+    ComApartment(const ComApartment&) = delete;
+    ComApartment& operator=(const ComApartment&) = delete;
+
+private:
+    bool initialized;
+};
+
+void InsertColumn(HWND listView, int index, const wchar_t* heading, int width)
 {
     LVCOLUMNW column{};
     column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
     column.pszText = const_cast<wchar_t*>(heading);
     column.cx = width;
     column.fmt = LVCFMT_LEFT;
-    ListView_InsertColumn(listView, 0, &column);
+    ListView_InsertColumn(listView, index, &column);
 }
 
 void InsertListItem(HWND listView, int index, const std::wstring& text)
@@ -51,13 +79,25 @@ void RefreshPlaylistList()
                           LVIS_SELECTED | LVIS_FOCUSED);
 }
 
-void RefreshTrackList()
+void SetListItemText(HWND listView, int row, int column,
+                     const std::wstring& text)
 {
-    ListView_DeleteAllItems(trackListView);
-    for (std::size_t index = 0; index < currentPlaylist.tracks.size(); ++index)
+    ListView_SetItemText(listView, row, column,
+                         const_cast<wchar_t*>(text.c_str()));
+}
+
+void RefreshTrackList(HWND listView, const Playlist& playlist)
+{
+    ListView_DeleteAllItems(listView);
+    for (std::size_t index = 0; index < playlist.tracks.size(); ++index)
     {
-        InsertListItem(trackListView, static_cast<int>(index),
-                       currentPlaylist.tracks[index].path);
+        const int row = static_cast<int>(index);
+        const Track& track = playlist.tracks[index];
+        InsertListItem(listView, row, track.title);
+        SetListItemText(listView, row, 1, track.artist);
+        SetListItemText(listView, row, 2, track.album);
+        SetListItemText(listView, row, 3, track.duration);
+        SetListItemText(listView, row, 4, track.path);
     }
 }
 
@@ -85,7 +125,12 @@ void LayoutChildren(HWND window)
     MoveWindow(trackListView, rightX, 0, rightWidth, height, TRUE);
 
     ListView_SetColumnWidth(playlistListView, 0, std::max(0, splitterX - 4));
-    ListView_SetColumnWidth(trackListView, 0, std::max(0, rightWidth - 4));
+    const int fixedTrackColumnsWidth = TitleColumnWidth + ArtistColumnWidth +
+                                       AlbumColumnWidth + DurationColumnWidth;
+    ListView_SetColumnWidth(
+        trackListView, 4,
+        std::max(MinimumPathColumnWidth,
+                 rightWidth - fixedTrackColumnsWidth - 4));
     InvalidateRect(window, nullptr, FALSE);
 }
 
@@ -126,10 +171,10 @@ void HandleDroppedFiles(HWND window, HDROP drop)
             const std::wstring path(buffer.data());
             if (IsSupportedAudioPath(path))
             {
-                AddTrack(currentPlaylist, path);
+                AddTrack(currentPlaylist, CreateTrackFromFile(path));
             }
         }
-        RefreshTrackList();
+        RefreshTrackList(trackListView, currentPlaylist);
     }
 
     DragFinish(drop);
@@ -161,10 +206,14 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             playlistListView, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
         ListView_SetExtendedListViewStyle(
             trackListView, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
-        InsertColumn(playlistListView, L"Playlist", splitterX);
-        InsertColumn(trackListView, L"Tracks", 400);
+        InsertColumn(playlistListView, 0, L"Playlist", splitterX);
+        InsertColumn(trackListView, 0, L"Title", TitleColumnWidth);
+        InsertColumn(trackListView, 1, L"Artist", ArtistColumnWidth);
+        InsertColumn(trackListView, 2, L"Album", AlbumColumnWidth);
+        InsertColumn(trackListView, 3, L"Duration", DurationColumnWidth);
+        InsertColumn(trackListView, 4, L"Path", MinimumPathColumnWidth);
         RefreshPlaylistList();
-        RefreshTrackList();
+        RefreshTrackList(trackListView, currentPlaylist);
         DragAcceptFiles(window, TRUE);
         return 0;
 
@@ -251,6 +300,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
+    ComApartment comApartment;
+
     INITCOMMONCONTROLSEX commonControls{};
     commonControls.dwSize = sizeof(commonControls);
     commonControls.dwICC = ICC_LISTVIEW_CLASSES;

@@ -1,6 +1,6 @@
 CXX := g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Wpedantic -g -O0 -DUNICODE -D_UNICODE
-LDLIBS := -lcomctl32 -lshell32 -lgdi32
+LDLIBS := -lcomctl32 -lshell32 -lgdi32 -lole32 -lpropsys -luuid
 
 TARGET := build/playlist-manager.exe
 OBJECTS := build/main.o build/playlist.o
@@ -22,4 +22,4 @@ build:
 	mkdir -p build
 
 clean:
-	rm -f $(OBJECTS) $(TARGET)
+	powershell -NoProfile -Command "Remove-Item -Force -ErrorAction SilentlyContinue 'build/main.o', 'build/playlist.o', 'build/playlist-manager.exe'"
