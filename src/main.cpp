@@ -4,6 +4,7 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <cwctype>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,10 @@ constexpr int ArtistColumnWidth = 140;
 constexpr int AlbumColumnWidth = 160;
 constexpr int DurationColumnWidth = 85;
 constexpr int MinimumPathColumnWidth = 240;
+constexpr UINT CommandNewPlaylist = 1001;
+constexpr UINT CommandRenamePlaylist = 1002;
+constexpr UINT CommandDeletePlaylist = 1003;
+constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
 
 HWND playlistListView = nullptr;
 HWND trackListView = nullptr;
@@ -27,7 +32,9 @@ int splitterX = 240;
 bool isDraggingSplitter = false;
 int splitterDragOffset = 0;
 
-Playlist currentPlaylist{L"New Playlist", L"", {}, false};
+std::vector<Playlist> playlists{{L"New Playlist", L"", {}, false}};
+int selectedPlaylistIndex = 0;
+bool isRefreshingPlaylistList = false;
 
 class ComApartment
 {
@@ -71,12 +78,40 @@ void InsertListItem(HWND listView, int index, const std::wstring& text)
     ListView_InsertItem(listView, &item);
 }
 
-void RefreshPlaylistList()
+Playlist* GetSelectedPlaylist()
 {
-    ListView_DeleteAllItems(playlistListView);
-    InsertListItem(playlistListView, 0, currentPlaylist.name);
-    ListView_SetItemState(playlistListView, 0, LVIS_SELECTED | LVIS_FOCUSED,
-                          LVIS_SELECTED | LVIS_FOCUSED);
+    if (selectedPlaylistIndex < 0 ||
+        selectedPlaylistIndex >= static_cast<int>(playlists.size()))
+    {
+        return nullptr;
+    }
+    return &playlists[static_cast<std::size_t>(selectedPlaylistIndex)];
+}
+
+void RefreshPlaylistList(HWND listView,
+                         const std::vector<Playlist>& playlistData)
+{
+    isRefreshingPlaylistList = true;
+    ListView_DeleteAllItems(listView);
+    for (std::size_t index = 0; index < playlistData.size(); ++index)
+    {
+        InsertListItem(listView, static_cast<int>(index),
+                       playlistData[index].name);
+    }
+
+    if (selectedPlaylistIndex >= 0 &&
+        selectedPlaylistIndex < static_cast<int>(playlistData.size()))
+    {
+        ListView_SetItemState(listView, selectedPlaylistIndex,
+                              LVIS_SELECTED | LVIS_FOCUSED,
+                              LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(listView, selectedPlaylistIndex, FALSE);
+    }
+    else
+    {
+        selectedPlaylistIndex = -1;
+    }
+    isRefreshingPlaylistList = false;
 }
 
 void SetListItemText(HWND listView, int row, int column,
@@ -98,6 +133,181 @@ void RefreshTrackList(HWND listView, const Playlist& playlist)
         SetListItemText(listView, row, 2, track.album);
         SetListItemText(listView, row, 3, track.duration);
         SetListItemText(listView, row, 4, track.path);
+    }
+}
+
+void RefreshSelectedTrackList()
+{
+    if (const Playlist* playlist = GetSelectedPlaylist())
+    {
+        RefreshTrackList(trackListView, *playlist);
+    }
+    else
+    {
+        ListView_DeleteAllItems(trackListView);
+    }
+}
+
+bool HasVisibleName(const std::wstring& name)
+{
+    return std::any_of(name.begin(), name.end(), [](wchar_t character) {
+        return std::iswspace(character) == 0;
+    });
+}
+
+std::wstring MakeNewPlaylistName()
+{
+    const std::wstring baseName = L"New Playlist";
+    const auto nameExists = [](const std::wstring& candidate) {
+        return std::any_of(playlists.begin(), playlists.end(),
+                           [&candidate](const Playlist& playlist) {
+                               return playlist.name == candidate;
+                           });
+    };
+
+    if (!nameExists(baseName))
+    {
+        return baseName;
+    }
+
+    for (int number = 2;; ++number)
+    {
+        std::wstring candidate = baseName + L" " + std::to_wstring(number);
+        if (!nameExists(candidate))
+        {
+            return candidate;
+        }
+    }
+}
+
+void CreateNewPlaylist()
+{
+    playlists.push_back(Playlist{MakeNewPlaylistName(), L"", {}, false});
+    selectedPlaylistIndex = static_cast<int>(playlists.size()) - 1;
+    RefreshPlaylistList(playlistListView, playlists);
+    RefreshSelectedTrackList();
+    SetFocus(playlistListView);
+    ListView_EditLabel(playlistListView, selectedPlaylistIndex);
+}
+
+void RenameSelectedPlaylist()
+{
+    if (GetSelectedPlaylist() == nullptr)
+    {
+        return;
+    }
+
+    SetFocus(playlistListView);
+    ListView_EditLabel(playlistListView, selectedPlaylistIndex);
+}
+
+void DeleteSelectedPlaylist(HWND window)
+{
+    Playlist* selectedPlaylist = GetSelectedPlaylist();
+    if (selectedPlaylist == nullptr)
+    {
+        return;
+    }
+
+    if (!selectedPlaylist->tracks.empty())
+    {
+        const std::wstring message =
+            L"This playlist contains " +
+            std::to_wstring(selectedPlaylist->tracks.size()) +
+            L" tracks.\nDelete this playlist?";
+        if (MessageBoxW(window, message.c_str(), WindowTitle,
+                        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+        {
+            return;
+        }
+    }
+
+    playlists.erase(playlists.begin() + selectedPlaylistIndex);
+    if (playlists.empty())
+    {
+        selectedPlaylistIndex = -1;
+    }
+    else if (selectedPlaylistIndex >= static_cast<int>(playlists.size()))
+    {
+        selectedPlaylistIndex = static_cast<int>(playlists.size()) - 1;
+    }
+
+    RefreshPlaylistList(playlistListView, playlists);
+    RefreshSelectedTrackList();
+}
+
+void SelectPlaylist(int index)
+{
+    if (index < 0 || index >= static_cast<int>(playlists.size()))
+    {
+        return;
+    }
+
+    selectedPlaylistIndex = index;
+    ListView_SetItemState(playlistListView, -1, 0,
+                          LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_SetItemState(playlistListView, index,
+                          LVIS_SELECTED | LVIS_FOCUSED,
+                          LVIS_SELECTED | LVIS_FOCUSED);
+    RefreshSelectedTrackList();
+}
+
+void ShowPlaylistContextMenu(HWND window, LPARAM lParam)
+{
+    POINT screenPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+    if (screenPoint.x == -1 && screenPoint.y == -1)
+    {
+        RECT itemRect{};
+        if (selectedPlaylistIndex >= 0 &&
+            ListView_GetItemRect(playlistListView, selectedPlaylistIndex,
+                                 &itemRect, LVIR_BOUNDS))
+        {
+            screenPoint = {itemRect.left, itemRect.bottom};
+            ClientToScreen(playlistListView, &screenPoint);
+        }
+        else
+        {
+            RECT listRect{};
+            GetWindowRect(playlistListView, &listRect);
+            screenPoint = {listRect.left + 8, listRect.top + 8};
+        }
+    }
+    else
+    {
+        POINT listPoint = screenPoint;
+        ScreenToClient(playlistListView, &listPoint);
+        LVHITTESTINFO hitTest{};
+        hitTest.pt = listPoint;
+        const int hitIndex = ListView_HitTest(playlistListView, &hitTest);
+        if (hitIndex >= 0)
+        {
+            SelectPlaylist(hitIndex);
+        }
+    }
+
+    HMENU menu = CreatePopupMenu();
+    if (menu == nullptr)
+    {
+        return;
+    }
+
+    AppendMenuW(menu, MF_STRING, CommandNewPlaylist, L"New Playlist");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    const UINT selectionState =
+        GetSelectedPlaylist() == nullptr ? MF_GRAYED : MF_ENABLED;
+    AppendMenuW(menu, MF_STRING | selectionState,
+                CommandRenamePlaylist, L"Rename");
+    AppendMenuW(menu, MF_STRING | selectionState,
+                CommandDeletePlaylist, L"Delete");
+
+    SetForegroundWindow(window);
+    const UINT command = TrackPopupMenu(
+        menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+        screenPoint.x, screenPoint.y, 0, window, nullptr);
+    DestroyMenu(menu);
+    if (command != 0)
+    {
+        SendMessageW(window, WM_COMMAND, MAKEWPARAM(command, 0), 0);
     }
 }
 
@@ -160,21 +370,31 @@ void HandleDroppedFiles(HWND window, HDROP drop)
 
     if (droppedInTrackPane)
     {
-        const UINT fileCount = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
-        for (UINT index = 0; index < fileCount; ++index)
+        Playlist* selectedPlaylist = GetSelectedPlaylist();
+        if (selectedPlaylist == nullptr)
         {
-            const UINT length = DragQueryFileW(drop, index, nullptr, 0);
-            std::vector<wchar_t> buffer(length + 1);
-            DragQueryFileW(drop, index, buffer.data(),
-                           static_cast<UINT>(buffer.size()));
-
-            const std::wstring path(buffer.data());
-            if (IsSupportedAudioPath(path))
-            {
-                AddTrack(currentPlaylist, CreateTrackFromFile(path));
-            }
+            MessageBoxW(window,
+                        L"No playlist selected. Create a playlist first.",
+                        WindowTitle, MB_OK | MB_ICONINFORMATION);
         }
-        RefreshTrackList(trackListView, currentPlaylist);
+        else
+        {
+            const UINT fileCount = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+            for (UINT index = 0; index < fileCount; ++index)
+            {
+                const UINT length = DragQueryFileW(drop, index, nullptr, 0);
+                std::vector<wchar_t> buffer(length + 1);
+                DragQueryFileW(drop, index, buffer.data(),
+                               static_cast<UINT>(buffer.size()));
+
+                const std::wstring path(buffer.data());
+                if (IsSupportedAudioPath(path))
+                {
+                    AddTrack(*selectedPlaylist, CreateTrackFromFile(path));
+                }
+            }
+            RefreshSelectedTrackList();
+        }
     }
 
     DragFinish(drop);
@@ -188,7 +408,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
     case WM_CREATE:
         playlistListView = CreateWindowExW(
             WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
-            WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+            WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL |
+                LVS_SHOWSELALWAYS | LVS_EDITLABELS,
             0, 0, 0, 0, window, nullptr,
             reinterpret_cast<LPCREATESTRUCTW>(lParam)->hInstance, nullptr);
         trackListView = CreateWindowExW(
@@ -212,10 +433,95 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         InsertColumn(trackListView, 2, L"Album", AlbumColumnWidth);
         InsertColumn(trackListView, 3, L"Duration", DurationColumnWidth);
         InsertColumn(trackListView, 4, L"Path", MinimumPathColumnWidth);
-        RefreshPlaylistList();
-        RefreshTrackList(trackListView, currentPlaylist);
+        RefreshPlaylistList(playlistListView, playlists);
+        RefreshSelectedTrackList();
         DragAcceptFiles(window, TRUE);
         return 0;
+
+    case WM_COMMAND:
+        switch (LOWORD(wParam))
+        {
+        case CommandNewPlaylist:
+            CreateNewPlaylist();
+            return 0;
+        case CommandRenamePlaylist:
+            RenameSelectedPlaylist();
+            return 0;
+        case CommandDeletePlaylist:
+            DeleteSelectedPlaylist(window);
+            return 0;
+        }
+        break;
+
+    case WM_NOTIFY:
+    {
+        NMHDR* header = reinterpret_cast<NMHDR*>(lParam);
+        if (header->hwndFrom != playlistListView)
+        {
+            break;
+        }
+
+        if (header->code == LVN_ITEMCHANGED && !isRefreshingPlaylistList)
+        {
+            NMLISTVIEW* change = reinterpret_cast<NMLISTVIEW*>(lParam);
+            const bool becameSelected =
+                (change->uChanged & LVIF_STATE) != 0 &&
+                (change->uNewState & LVIS_SELECTED) != 0 &&
+                (change->uOldState & LVIS_SELECTED) == 0 &&
+                change->iItem >= 0 &&
+                change->iItem < static_cast<int>(playlists.size());
+            if (becameSelected)
+            {
+                selectedPlaylistIndex = change->iItem;
+                RefreshSelectedTrackList();
+            }
+            return 0;
+        }
+
+        if (header->code == LVN_ENDLABELEDITW)
+        {
+            NMLVDISPINFOW* edit = reinterpret_cast<NMLVDISPINFOW*>(lParam);
+            if (edit->item.iItem >= 0 && edit->item.pszText != nullptr &&
+                edit->item.iItem < static_cast<int>(playlists.size()) &&
+                HasVisibleName(edit->item.pszText))
+            {
+                selectedPlaylistIndex = edit->item.iItem;
+                playlists[static_cast<std::size_t>(edit->item.iItem)].name =
+                    edit->item.pszText;
+                playlists[static_cast<std::size_t>(edit->item.iItem)].isModified =
+                    true;
+                PostMessageW(window, MessageRefreshPlaylistList, 0, 0);
+            }
+            return FALSE;
+        }
+
+        if (header->code == LVN_KEYDOWN)
+        {
+            NMLVKEYDOWN* key = reinterpret_cast<NMLVKEYDOWN*>(lParam);
+            if (key->wVKey == VK_F2)
+            {
+                RenameSelectedPlaylist();
+            }
+            else if (key->wVKey == VK_DELETE)
+            {
+                DeleteSelectedPlaylist(window);
+            }
+            return 0;
+        }
+        break;
+    }
+
+    case MessageRefreshPlaylistList:
+        RefreshPlaylistList(playlistListView, playlists);
+        return 0;
+
+    case WM_CONTEXTMENU:
+        if (reinterpret_cast<HWND>(wParam) == playlistListView)
+        {
+            ShowPlaylistContextMenu(window, lParam);
+            return 0;
+        }
+        break;
 
     case WM_SIZE:
         LayoutChildren(window);
