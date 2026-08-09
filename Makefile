@@ -1,6 +1,6 @@
 CXX := g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Wpedantic -g -O0 -DUNICODE -D_UNICODE
-LDLIBS := -lcomctl32 -lshell32 -lgdi32 -lole32 -lpropsys -luuid
+LDLIBS := -lcomctl32 -lcomdlg32 -lshell32 -lgdi32 -lole32 -lpropsys -luuid
 
 TARGET := build/playlist-manager.exe
 OBJECTS := build/main.o build/playlist.o

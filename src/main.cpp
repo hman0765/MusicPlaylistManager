@@ -1,9 +1,11 @@
 #include <windows.h>
 #include <windowsx.h>
+#include <commdlg.h>
 #include <commctrl.h>
 #include <shellapi.h>
 
 #include <algorithm>
+#include <cwchar>
 #include <cwctype>
 #include <exception>
 #include <iterator>
@@ -27,6 +29,7 @@ constexpr int MinimumPathColumnWidth = 240;
 constexpr UINT CommandNewPlaylist = 1001;
 constexpr UINT CommandRenamePlaylist = 1002;
 constexpr UINT CommandDeletePlaylist = 1003;
+constexpr UINT CommandExportM3U8 = 1004;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
 
 HWND playlistListView = nullptr;
@@ -245,6 +248,87 @@ void DeleteSelectedPlaylist(HWND window)
     RefreshSelectedTrackList();
 }
 
+std::wstring MakeSafeExportFileName(const std::wstring& playlistName)
+{
+    std::wstring fileName = playlistName;
+    constexpr wchar_t InvalidFileNameCharacters[] = L"<>:\"/\\|?*";
+    for (wchar_t& character : fileName)
+    {
+        if (std::wcschr(InvalidFileNameCharacters, character) != nullptr)
+        {
+            character = L'_';
+        }
+    }
+    while (!fileName.empty() &&
+           (fileName.back() == L' ' || fileName.back() == L'.'))
+    {
+        fileName.pop_back();
+    }
+    if (fileName.empty())
+    {
+        fileName = L"Playlist";
+    }
+    return fileName + L".m3u8";
+}
+
+void ExportSelectedPlaylist(HWND window)
+{
+    Playlist* playlist = GetSelectedPlaylist();
+    if (playlist == nullptr)
+    {
+        MessageBoxW(window, L"No playlist selected.", WindowTitle,
+                    MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    constexpr DWORD MaximumPathLength = 32768;
+    std::vector<wchar_t> filePathBuffer(MaximumPathLength, L'\0');
+    const std::wstring initialPath = playlist->filePath.empty()
+        ? MakeSafeExportFileName(playlist->name)
+        : playlist->filePath;
+    const std::size_t copyLength =
+        std::min(initialPath.size(), filePathBuffer.size() - 1);
+    std::copy_n(initialPath.data(), copyLength, filePathBuffer.data());
+
+    constexpr wchar_t FileFilter[] =
+        L"m3u8 Playlist (*.m3u8)\0*.m3u8\0"
+        L"All Files (*.*)\0*.*\0";
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = window;
+    dialog.lpstrFilter = FileFilter;
+    dialog.nFilterIndex = 1;
+    dialog.lpstrFile = filePathBuffer.data();
+    dialog.nMaxFile = static_cast<DWORD>(filePathBuffer.size());
+    dialog.lpstrDefExt = L"m3u8";
+    dialog.lpstrTitle = L"Export Playlist as m3u8";
+    dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+
+    if (!GetSaveFileNameW(&dialog))
+    {
+        if (CommDlgExtendedError() != 0)
+        {
+            MessageBoxW(window, L"The Save dialog could not be opened.",
+                        WindowTitle, MB_OK | MB_ICONERROR);
+        }
+        return;
+    }
+
+    try
+    {
+        SaveM3U8(*playlist, filePathBuffer.data());
+        playlist->filePath = filePathBuffer.data();
+        playlist->isModified = false;
+        MessageBoxW(window, L"The playlist was exported successfully.",
+                    WindowTitle, MB_OK | MB_ICONINFORMATION);
+    }
+    catch (const std::exception&)
+    {
+        MessageBoxW(window, L"Failed to export the m3u8 playlist.",
+                    WindowTitle, MB_OK | MB_ICONERROR);
+    }
+}
+
 void SelectPlaylist(int index)
 {
     if (index < 0 || index >= static_cast<int>(playlists.size()))
@@ -308,6 +392,9 @@ void ShowPlaylistContextMenu(HWND window, LPARAM lParam)
                 CommandRenamePlaylist, L"Rename");
     AppendMenuW(menu, MF_STRING | selectionState,
                 CommandDeletePlaylist, L"Delete");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING | selectionState,
+                CommandExportM3U8, L"Export m3u8...");
 
     SetForegroundWindow(window);
     const UINT command = TrackPopupMenu(
@@ -551,6 +638,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             return 0;
         case CommandDeletePlaylist:
             DeleteSelectedPlaylist(window);
+            return 0;
+        case CommandExportM3U8:
+            ExportSelectedPlaylist(window);
             return 0;
         }
         break;

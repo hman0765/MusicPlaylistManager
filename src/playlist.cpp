@@ -57,7 +57,8 @@ std::wstring ReadStringProperty(IPropertyStore* propertyStore,
     return result;
 }
 
-std::wstring ReadDurationProperty(IPropertyStore* propertyStore)
+std::wstring ReadDurationProperty(IPropertyStore* propertyStore,
+                                  int& durationSeconds)
 {
     PROPVARIANT value{};
     PropVariantInit(&value);
@@ -77,6 +78,10 @@ std::wstring ReadDurationProperty(IPropertyStore* propertyStore)
     constexpr ULONGLONG HundredNanosecondsPerSecond = 10'000'000;
     const ULONGLONG totalSeconds =
         durationInHundredNanoseconds / HundredNanosecondsPerSecond;
+    if (totalSeconds <= static_cast<ULONGLONG>(std::numeric_limits<int>::max()))
+    {
+        durationSeconds = static_cast<int>(totalSeconds);
+    }
     const ULONGLONG hours = totalSeconds / 3600;
     const ULONGLONG minutes = (totalSeconds / 60) % 60;
     const ULONGLONG seconds = totalSeconds % 60;
@@ -188,6 +193,37 @@ int ParseExtinfDuration(const std::wstring& text)
         return -1;
     }
 }
+
+std::string EncodeUtf8(const std::wstring& text)
+{
+    if (text.empty())
+    {
+        return "";
+    }
+    if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+    {
+        throw std::runtime_error("The playlist data is too large.");
+    }
+
+    const int characterCount = static_cast<int>(text.size());
+    const int byteCount = WideCharToMultiByte(
+        CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), characterCount,
+        nullptr, 0, nullptr, nullptr);
+    if (byteCount == 0)
+    {
+        throw std::runtime_error("Failed to encode the playlist as UTF-8.");
+    }
+
+    std::string bytes(static_cast<std::size_t>(byteCount), '\0');
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                            text.data(), characterCount,
+                            bytes.data(), byteCount,
+                            nullptr, nullptr) == 0)
+    {
+        throw std::runtime_error("Failed to encode the playlist as UTF-8.");
+    }
+    return bytes;
+}
 }
 
 bool IsSupportedAudioPath(const std::wstring& path)
@@ -223,7 +259,8 @@ Track CreateTrackFromFile(const std::wstring& path)
         track.title = ReadStringProperty(propertyStore, PKEY_Title);
         track.artist = ReadStringProperty(propertyStore, PKEY_Music_Artist);
         track.album = ReadStringProperty(propertyStore, PKEY_Music_AlbumTitle);
-        track.duration = ReadDurationProperty(propertyStore);
+        track.duration = ReadDurationProperty(propertyStore,
+                                              track.durationSeconds);
         propertyStore->Release();
     }
 
@@ -289,6 +326,73 @@ Playlist LoadM3U8(const std::wstring& filePath)
 
     playlist.isModified = false;
     return playlist;
+}
+
+std::wstring BuildExtinfText(const Track& track)
+{
+    if (!track.extinfText.empty())
+    {
+        return track.extinfText;
+    }
+    if (!track.artist.empty() && !track.title.empty())
+    {
+        return track.artist + L" - " + track.title;
+    }
+    if (!track.title.empty())
+    {
+        return track.title;
+    }
+    if (track.path.empty())
+    {
+        return L"";
+    }
+    return std::filesystem::path(track.path).stem().wstring();
+}
+
+int GetExportDuration(const Track& track)
+{
+    if (track.extinfDuration >= 0)
+    {
+        return track.extinfDuration;
+    }
+    if (track.durationSeconds >= 0)
+    {
+        return track.durationSeconds;
+    }
+    return -1;
+}
+
+void SaveM3U8(const Playlist& playlist, const std::wstring& filePath)
+{
+    std::wstring contents = L"#EXTM3U\r\n";
+    for (const Track& track : playlist.tracks)
+    {
+        if (track.path.empty())
+        {
+            continue;
+        }
+
+        contents += L"#EXTINF:";
+        contents += std::to_wstring(GetExportDuration(track));
+        contents += L",";
+        contents += BuildExtinfText(track);
+        contents += L"\r\n";
+        contents += track.path;
+        contents += L"\r\n";
+    }
+
+    const std::string utf8 = EncodeUtf8(contents);
+    std::ofstream file(std::filesystem::path(filePath),
+                       std::ios::binary | std::ios::trunc);
+    if (!file)
+    {
+        throw std::runtime_error("Failed to create the m3u8 file.");
+    }
+    file.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
+    if (!file)
+    {
+        throw std::runtime_error("Failed to write the m3u8 file.");
+    }
 }
 
 std::wstring FormatDuration(int totalSeconds)
