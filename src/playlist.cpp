@@ -250,21 +250,56 @@ Track CreateTrackFromFile(const std::wstring& path)
     Track track{};
     track.path = path;
 
-    IPropertyStore* propertyStore = nullptr;
-    const HRESULT result = SHGetPropertyStoreFromParsingName(
-        path.c_str(), nullptr, GPS_BESTEFFORT,
-        IID_PPV_ARGS(&propertyStore));
-    if (SUCCEEDED(result))
+    UpdateTrackMetadata(track);
+    return track;
+}
+
+bool UpdateTrackMetadata(Track& track)
+{
+    if (track.path.empty())
     {
-        track.title = ReadStringProperty(propertyStore, PKEY_Title);
-        track.artist = ReadStringProperty(propertyStore, PKEY_Music_Artist);
-        track.album = ReadStringProperty(propertyStore, PKEY_Music_AlbumTitle);
-        track.duration = ReadDurationProperty(propertyStore,
-                                              track.durationSeconds);
-        propertyStore->Release();
+        return false;
     }
 
-    return track;
+    IPropertyStore* propertyStore = nullptr;
+    const HRESULT result = SHGetPropertyStoreFromParsingName(
+        track.path.c_str(), nullptr, GPS_BESTEFFORT,
+        IID_PPV_ARGS(&propertyStore));
+    if (FAILED(result))
+    {
+        return false;
+    }
+
+    const std::wstring title =
+        ReadStringProperty(propertyStore, PKEY_Title);
+    const std::wstring artist =
+        ReadStringProperty(propertyStore, PKEY_Music_Artist);
+    const std::wstring album =
+        ReadStringProperty(propertyStore, PKEY_Music_AlbumTitle);
+    int durationSeconds = -1;
+    const std::wstring duration =
+        ReadDurationProperty(propertyStore, durationSeconds);
+    propertyStore->Release();
+
+    bool loadedAnyMetadata = false;
+    const auto updateString = [&loadedAnyMetadata](std::wstring& destination,
+                                                    const std::wstring& value) {
+        if (!value.empty())
+        {
+            destination = value;
+            loadedAnyMetadata = true;
+        }
+    };
+    updateString(track.title, title);
+    updateString(track.artist, artist);
+    updateString(track.album, album);
+    if (!duration.empty())
+    {
+        track.duration = duration;
+        track.durationSeconds = durationSeconds;
+        loadedAnyMetadata = true;
+    }
+    return loadedAnyMetadata;
 }
 
 Playlist LoadM3U8(const std::wstring& filePath)

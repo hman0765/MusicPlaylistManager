@@ -30,6 +30,8 @@ constexpr UINT CommandNewPlaylist = 1001;
 constexpr UINT CommandRenamePlaylist = 1002;
 constexpr UINT CommandDeletePlaylist = 1003;
 constexpr UINT CommandExportM3U8 = 1004;
+constexpr UINT CommandGetTrackMetadata = 1005;
+constexpr UINT CommandDeleteTracks = 1006;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
 
 HWND playlistListView = nullptr;
@@ -158,6 +160,100 @@ void RefreshSelectedTrackList()
     {
         ListView_DeleteAllItems(trackListView);
     }
+}
+
+std::vector<int> GetSelectedTrackIndices(HWND listView)
+{
+    std::vector<int> indices;
+    int index = -1;
+    while ((index = ListView_GetNextItem(listView, index, LVNI_SELECTED)) != -1)
+    {
+        indices.push_back(index);
+    }
+    return indices;
+}
+
+void RestoreTrackSelection(const std::vector<int>& indices)
+{
+    const int itemCount = ListView_GetItemCount(trackListView);
+    int firstSelected = -1;
+    for (const int index : indices)
+    {
+        if (index >= 0 && index < itemCount)
+        {
+            ListView_SetItemState(trackListView, index,
+                                  LVIS_SELECTED | LVIS_FOCUSED,
+                                  LVIS_SELECTED | LVIS_FOCUSED);
+            if (firstSelected == -1)
+            {
+                firstSelected = index;
+            }
+        }
+    }
+    if (firstSelected >= 0)
+    {
+        ListView_EnsureVisible(trackListView, firstSelected, FALSE);
+    }
+}
+
+void DeleteSelectedTracks()
+{
+    Playlist* playlist = GetSelectedPlaylist();
+    std::vector<int> selectedIndices =
+        GetSelectedTrackIndices(trackListView);
+    if (playlist == nullptr || selectedIndices.empty())
+    {
+        return;
+    }
+
+    const int nextSelection = selectedIndices.front();
+    for (auto iterator = selectedIndices.rbegin();
+         iterator != selectedIndices.rend(); ++iterator)
+    {
+        const int index = *iterator;
+        if (index >= 0 && index < static_cast<int>(playlist->tracks.size()))
+        {
+            playlist->tracks.erase(playlist->tracks.begin() + index);
+        }
+    }
+    playlist->isModified = true;
+    RefreshSelectedTrackList();
+
+    if (!playlist->tracks.empty())
+    {
+        const int correctedSelection = std::min(
+            nextSelection, static_cast<int>(playlist->tracks.size()) - 1);
+        RestoreTrackSelection({correctedSelection});
+    }
+}
+
+void GetMetadataForSelectedTracks()
+{
+    Playlist* playlist = GetSelectedPlaylist();
+    const std::vector<int> selectedIndices =
+        GetSelectedTrackIndices(trackListView);
+    if (playlist == nullptr || selectedIndices.empty())
+    {
+        return;
+    }
+
+    bool updatedAnyTrack = false;
+    for (const int index : selectedIndices)
+    {
+        if (index >= 0 && index < static_cast<int>(playlist->tracks.size()))
+        {
+            updatedAnyTrack =
+                UpdateTrackMetadata(
+                    playlist->tracks[static_cast<std::size_t>(index)]) ||
+                updatedAnyTrack;
+        }
+    }
+    if (updatedAnyTrack)
+    {
+        playlist->isModified = true;
+    }
+    RefreshSelectedTrackList();
+    RestoreTrackSelection(selectedIndices);
 }
 
 bool HasVisibleName(const std::wstring& name)
@@ -407,6 +503,71 @@ void ShowPlaylistContextMenu(HWND window, LPARAM lParam)
     }
 }
 
+void ShowTrackContextMenu(HWND window, LPARAM lParam)
+{
+    POINT screenPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+    if (screenPoint.x == -1 && screenPoint.y == -1)
+    {
+        const std::vector<int> selectedIndices =
+            GetSelectedTrackIndices(trackListView);
+        RECT itemRect{};
+        if (!selectedIndices.empty() &&
+            ListView_GetItemRect(trackListView, selectedIndices.front(),
+                                 &itemRect, LVIR_BOUNDS))
+        {
+            screenPoint = {itemRect.left, itemRect.bottom};
+            ClientToScreen(trackListView, &screenPoint);
+        }
+        else
+        {
+            RECT listRect{};
+            GetWindowRect(trackListView, &listRect);
+            screenPoint = {listRect.left + 8, listRect.top + 8};
+        }
+    }
+    else
+    {
+        POINT listPoint = screenPoint;
+        ScreenToClient(trackListView, &listPoint);
+        LVHITTESTINFO hitTest{};
+        hitTest.pt = listPoint;
+        const int hitIndex = ListView_HitTest(trackListView, &hitTest);
+        if (hitIndex >= 0 &&
+            (ListView_GetItemState(trackListView, hitIndex, LVIS_SELECTED) &
+             LVIS_SELECTED) == 0)
+        {
+            ListView_SetItemState(trackListView, -1, 0, LVIS_SELECTED);
+            RestoreTrackSelection({hitIndex});
+        }
+    }
+    SetFocus(trackListView);
+
+    HMENU menu = CreatePopupMenu();
+    if (menu == nullptr)
+    {
+        return;
+    }
+
+    const UINT selectionState = GetSelectedTrackIndices(trackListView).empty()
+        ? MF_GRAYED
+        : MF_ENABLED;
+    AppendMenuW(menu, MF_STRING | selectionState,
+                CommandGetTrackMetadata, L"Get Metadata");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING | selectionState,
+                CommandDeleteTracks, L"Delete Track");
+
+    SetForegroundWindow(window);
+    const UINT command = TrackPopupMenu(
+        menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+        screenPoint.x, screenPoint.y, 0, window, nullptr);
+    DestroyMenu(menu);
+    if (command != 0)
+    {
+        SendMessageW(window, WM_COMMAND, MAKEWPARAM(command, 0), 0);
+    }
+}
+
 void LayoutChildren(HWND window)
 {
     RECT client{};
@@ -642,12 +803,27 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         case CommandExportM3U8:
             ExportSelectedPlaylist(window);
             return 0;
+        case CommandGetTrackMetadata:
+            GetMetadataForSelectedTracks();
+            return 0;
+        case CommandDeleteTracks:
+            DeleteSelectedTracks();
+            return 0;
         }
         break;
 
     case WM_NOTIFY:
     {
         NMHDR* header = reinterpret_cast<NMHDR*>(lParam);
+        if (header->hwndFrom == trackListView && header->code == LVN_KEYDOWN)
+        {
+            NMLVKEYDOWN* key = reinterpret_cast<NMLVKEYDOWN*>(lParam);
+            if (key->wVKey == VK_DELETE)
+            {
+                DeleteSelectedTracks();
+            }
+            return 0;
+        }
         if (header->hwndFrom != playlistListView)
         {
             break;
@@ -711,6 +887,11 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         if (reinterpret_cast<HWND>(wParam) == playlistListView)
         {
             ShowPlaylistContextMenu(window, lParam);
+            return 0;
+        }
+        if (reinterpret_cast<HWND>(wParam) == trackListView)
+        {
+            ShowTrackContextMenu(window, lParam);
             return 0;
         }
         break;

@@ -26,6 +26,7 @@ struct Playlist
 bool IsSupportedAudioPath(const std::wstring& path);
 bool IsM3U8Path(const std::wstring& path);
 Track CreateTrackFromFile(const std::wstring& path);
+bool UpdateTrackMetadata(Track& track);
 Playlist LoadM3U8(const std::wstring& filePath);
 void SaveM3U8(const Playlist& playlist, const std::wstring& filePath);
 std::wstring BuildExtinfText(const Track& track);
