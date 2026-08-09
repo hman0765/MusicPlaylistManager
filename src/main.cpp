@@ -8,12 +8,14 @@
 #include <cwchar>
 #include <cwctype>
 #include <exception>
+#include <filesystem>
 #include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "app_state.h"
+#include "drag_drop.h"
 #include "playlist.h"
 
 namespace
@@ -47,16 +49,7 @@ int savedWindowHeight = 600;
 bool isDraggingSplitter = false;
 int splitterDragOffset = 0;
 int splitterXAtDragStart = 240;
-
-enum class InternalDragSource
-{
-    None,
-    Playlist,
-    Track
-};
-
-InternalDragSource internalDragSource = InternalDragSource::None;
-int draggedItemIndex = -1;
+bool oleDragDropAvailable = false;
 
 std::vector<Playlist> playlists{{L"New Playlist", L"", {}, false}};
 int selectedPlaylistIndex = 0;
@@ -116,24 +109,29 @@ void ResetToDefaultAppState()
     appStateDirty = false;
 }
 
-class ComApartment
+class OleApartment
 {
 public:
-    ComApartment()
-        : initialized(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
+    OleApartment()
+        : initialized(SUCCEEDED(OleInitialize(nullptr)))
     {
     }
 
-    ~ComApartment()
+    ~OleApartment()
     {
         if (initialized)
         {
-            CoUninitialize();
+            OleUninitialize();
         }
     }
 
-    ComApartment(const ComApartment&) = delete;
-    ComApartment& operator=(const ComApartment&) = delete;
+    bool IsAvailable() const
+    {
+        return initialized;
+    }
+
+    OleApartment(const OleApartment&) = delete;
+    OleApartment& operator=(const OleApartment&) = delete;
 
 private:
     bool initialized;
@@ -243,6 +241,62 @@ std::vector<int> GetSelectedTrackIndices(HWND listView)
         indices.push_back(index);
     }
     return indices;
+}
+
+std::vector<std::wstring> GetSelectedExistingTrackPaths()
+{
+    std::vector<std::wstring> paths;
+    const Playlist* playlist = GetSelectedPlaylist();
+    if (playlist == nullptr)
+    {
+        return paths;
+    }
+
+    for (const int index : GetSelectedTrackIndices(trackListView))
+    {
+        if (index < 0 || index >= static_cast<int>(playlist->tracks.size()))
+        {
+            continue;
+        }
+        const std::wstring& path =
+            playlist->tracks[static_cast<std::size_t>(index)].path;
+        if (path.empty())
+        {
+            continue;
+        }
+
+        std::error_code error;
+        if (std::filesystem::is_regular_file(std::filesystem::path(path), error) &&
+            !error)
+        {
+            paths.push_back(path);
+        }
+    }
+    return paths;
+}
+
+void StartSelectedTrackDrag(int dragItemIndex)
+{
+    if (!oleDragDropAvailable || GetSelectedPlaylist() == nullptr ||
+        dragItemIndex < 0)
+    {
+        return;
+    }
+
+    if ((ListView_GetItemState(trackListView, dragItemIndex, LVIS_SELECTED) &
+        LVIS_SELECTED) == 0)
+    {
+        ListView_SetItemState(trackListView, -1, 0, LVIS_SELECTED);
+        ListView_SetItemState(trackListView, dragItemIndex,
+                              LVIS_SELECTED | LVIS_FOCUSED,
+                              LVIS_SELECTED | LVIS_FOCUSED);
+    }
+
+    const std::vector<std::wstring> paths = GetSelectedExistingTrackPaths();
+    if (!paths.empty())
+    {
+        StartExternalFileDrag(paths);
+    }
 }
 
 void RestoreTrackSelection(const std::vector<int>& indices)
@@ -649,195 +703,6 @@ void ShowTrackContextMenu(HWND window, LPARAM lParam)
     }
 }
 
-HWND GetInternalDragListView()
-{
-    switch (internalDragSource)
-    {
-    case InternalDragSource::Playlist:
-        return playlistListView;
-    case InternalDragSource::Track:
-        return trackListView;
-    default:
-        return nullptr;
-    }
-}
-
-void ClearInsertMark(HWND listView)
-{
-    if (listView == nullptr)
-    {
-        return;
-    }
-    LVINSERTMARK insertMark{};
-    insertMark.cbSize = sizeof(insertMark);
-    insertMark.iItem = -1;
-    SendMessageW(listView, LVM_SETINSERTMARK, 0,
-                 reinterpret_cast<LPARAM>(&insertMark));
-}
-
-int GetInsertionIndex(HWND window, HWND listView, POINT windowPoint)
-{
-    POINT listPoint = windowPoint;
-    ClientToScreen(window, &listPoint);
-    ScreenToClient(listView, &listPoint);
-
-    RECT client{};
-    GetClientRect(listView, &client);
-    if (!PtInRect(&client, listPoint))
-    {
-        return -1;
-    }
-
-    const int itemCount = ListView_GetItemCount(listView);
-    if (itemCount == 0)
-    {
-        return 0;
-    }
-
-    LVHITTESTINFO hitTest{};
-    hitTest.pt = listPoint;
-    const int hitIndex = ListView_HitTest(listView, &hitTest);
-    if (hitIndex >= 0)
-    {
-        RECT itemRect{};
-        ListView_GetItemRect(listView, hitIndex, &itemRect, LVIR_BOUNDS);
-        const int midpoint = itemRect.top +
-                             (itemRect.bottom - itemRect.top) / 2;
-        return listPoint.y < midpoint ? hitIndex : hitIndex + 1;
-    }
-
-    const int topIndex = ListView_GetTopIndex(listView);
-    RECT topItemRect{};
-    if (topIndex >= 0 &&
-        ListView_GetItemRect(listView, topIndex, &topItemRect, LVIR_BOUNDS) &&
-        listPoint.y < topItemRect.top)
-    {
-        return topIndex;
-    }
-    return itemCount;
-}
-
-void SetInsertMarkForIndex(HWND listView, int insertionIndex)
-{
-    ClearInsertMark(listView);
-    const int itemCount = ListView_GetItemCount(listView);
-    if (insertionIndex < 0 || itemCount == 0)
-    {
-        return;
-    }
-
-    LVINSERTMARK insertMark{};
-    insertMark.cbSize = sizeof(insertMark);
-    if (insertionIndex >= itemCount)
-    {
-        insertMark.dwFlags = LVIM_AFTER;
-        insertMark.iItem = itemCount - 1;
-    }
-    else
-    {
-        insertMark.iItem = insertionIndex;
-    }
-    SendMessageW(listView, LVM_SETINSERTMARK, 0,
-                 reinterpret_cast<LPARAM>(&insertMark));
-}
-
-bool UpdateInternalDragFeedback(HWND window, POINT windowPoint)
-{
-    HWND listView = GetInternalDragListView();
-    if (listView == nullptr)
-    {
-        return false;
-    }
-    const int insertionIndex = GetInsertionIndex(window, listView, windowPoint);
-    SetInsertMarkForIndex(listView, insertionIndex);
-    return insertionIndex >= 0;
-}
-
-void BeginInternalDrag(HWND window, InternalDragSource source, int itemIndex)
-{
-    if (source == InternalDragSource::None || itemIndex < 0 ||
-        isDraggingSplitter)
-    {
-        return;
-    }
-
-    internalDragSource = source;
-    draggedItemIndex = itemIndex;
-    SetCapture(window);
-
-    POINT point{};
-    GetCursorPos(&point);
-    ScreenToClient(window, &point);
-    UpdateInternalDragFeedback(window, point);
-    SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
-}
-
-void CancelInternalDrag(HWND window, bool releaseCapture)
-{
-    ClearInsertMark(playlistListView);
-    ClearInsertMark(trackListView);
-    internalDragSource = InternalDragSource::None;
-    draggedItemIndex = -1;
-    if (releaseCapture && GetCapture() == window)
-    {
-        ReleaseCapture();
-    }
-}
-
-void FinishInternalDrop(HWND window, POINT windowPoint)
-{
-    const InternalDragSource source = internalDragSource;
-    const int fromIndex = draggedItemIndex;
-    HWND listView = GetInternalDragListView();
-    const int insertionIndex = listView == nullptr
-        ? -1
-        : GetInsertionIndex(window, listView, windowPoint);
-    CancelInternalDrag(window, true);
-
-    if (insertionIndex < 0 || fromIndex < 0)
-    {
-        return;
-    }
-
-    if (source == InternalDragSource::Playlist &&
-        fromIndex < static_cast<int>(playlists.size()))
-    {
-        const int newIndex = static_cast<int>(MoveVectorItem(
-            playlists, static_cast<std::size_t>(fromIndex),
-            static_cast<std::size_t>(insertionIndex)));
-        if (newIndex != fromIndex)
-        {
-            selectedPlaylistIndex = RemapIndexAfterMove(
-                selectedPlaylistIndex, fromIndex, newIndex);
-            MarkAppStateDirty();
-            RefreshPlaylistList(playlistListView, playlists);
-            RefreshSelectedTrackList();
-        }
-        return;
-    }
-
-    if (source == InternalDragSource::Track)
-    {
-        Playlist* playlist = GetSelectedPlaylist();
-        if (playlist == nullptr ||
-            fromIndex >= static_cast<int>(playlist->tracks.size()))
-        {
-            return;
-        }
-
-        const int newIndex = static_cast<int>(MoveVectorItem(
-            playlist->tracks, static_cast<std::size_t>(fromIndex),
-            static_cast<std::size_t>(insertionIndex)));
-        if (newIndex != fromIndex)
-        {
-            playlist->isModified = true;
-            MarkAppStateDirty();
-            RefreshSelectedTrackList();
-            RestoreTrackSelection({newIndex});
-        }
-    }
-}
-
 void LayoutChildren(HWND window)
 {
     RECT client{};
@@ -1094,27 +959,13 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             NMLISTVIEW* drag = reinterpret_cast<NMLISTVIEW*>(lParam);
             if (header->hwndFrom == playlistListView)
             {
-                BeginInternalDrag(window, InternalDragSource::Playlist,
-                                  drag->iItem);
                 return 0;
             }
-            if (header->hwndFrom == trackListView &&
-                GetSelectedPlaylist() != nullptr)
+            if (header->hwndFrom == trackListView)
             {
-                BeginInternalDrag(window, InternalDragSource::Track,
-                                  drag->iItem);
+                StartSelectedTrackDrag(drag->iItem);
                 return 0;
             }
-        }
-        if (header->code == LVN_KEYDOWN &&
-            internalDragSource != InternalDragSource::None)
-        {
-            NMLVKEYDOWN* key = reinterpret_cast<NMLVKEYDOWN*>(lParam);
-            if (key->wVKey == VK_ESCAPE)
-            {
-                CancelInternalDrag(window, true);
-            }
-            return 0;
         }
         if (header->hwndFrom == trackListView && header->code == LVN_KEYDOWN)
         {
@@ -1240,12 +1091,6 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             splitterX = GET_X_LPARAM(lParam) - splitterDragOffset;
             LayoutChildren(window);
         }
-        else if (internalDragSource != InternalDragSource::None)
-        {
-            const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-            const bool canDrop = UpdateInternalDragFeedback(window, point);
-            SetCursor(LoadCursorW(nullptr, canDrop ? IDC_SIZEALL : IDC_NO));
-        }
         return 0;
 
     case WM_LBUTTONUP:
@@ -1258,11 +1103,6 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
                 MarkAppStateDirty();
             }
         }
-        else if (internalDragSource != InternalDragSource::None)
-        {
-            const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-            FinishInternalDrop(window, point);
-        }
         return 0;
 
     case WM_CAPTURECHANGED:
@@ -1271,20 +1111,21 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             MarkAppStateDirty();
         }
         isDraggingSplitter = false;
-        CancelInternalDrag(window, false);
         return 0;
 
     case WM_CANCELMODE:
+        if (isDraggingSplitter && splitterX != splitterXAtDragStart)
+        {
+            MarkAppStateDirty();
+        }
         isDraggingSplitter = false;
-        CancelInternalDrag(window, true);
+        if (GetCapture() == window)
+        {
+            ReleaseCapture();
+        }
         return 0;
 
     case WM_SETCURSOR:
-        if (internalDragSource != InternalDragSource::None)
-        {
-            SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
-            return TRUE;
-        }
         if (LOWORD(lParam) == HTCLIENT)
         {
             POINT point{};
@@ -1350,7 +1191,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
-    ComApartment comApartment;
+    OleApartment oleApartment;
+    oleDragDropAvailable = oleApartment.IsAvailable();
 
     AppState loadedState{};
     const AppStateLoadResult loadResult = LoadAppState(loadedState);
