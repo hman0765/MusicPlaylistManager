@@ -1,6 +1,7 @@
 CXX := g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Wpedantic -g -O0 -DUNICODE -D_UNICODE
 LDLIBS := -lcomctl32 -lcomdlg32 -lshell32 -lgdi32 -lole32 -lpropsys -luuid
+LDFLAGS := -municode -static
 
 TARGET := build/playlist-manager.exe
 OBJECTS := build/main.o build/playlist.o build/app_state.o
@@ -10,7 +11,7 @@ OBJECTS := build/main.o build/playlist.o build/app_state.o
 all: $(TARGET)
 
 $(TARGET): $(OBJECTS)
-	$(CXX) -municode $^ -o $@ $(LDLIBS)
+	$(CXX) $(LDFLAGS) $^ -o $@ $(LDLIBS)
 
 build/main.o: src/main.cpp src/playlist.h | build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
