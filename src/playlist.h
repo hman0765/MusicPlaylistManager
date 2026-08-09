@@ -1,7 +1,54 @@
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
+
+template <typename T>
+std::size_t MoveVectorItem(std::vector<T>& items,
+                           std::size_t fromIndex,
+                           std::size_t insertionIndex)
+{
+    if (fromIndex >= items.size())
+    {
+        return fromIndex;
+    }
+
+    insertionIndex = std::min(insertionIndex, items.size());
+    if (insertionIndex == fromIndex || insertionIndex == fromIndex + 1)
+    {
+        return fromIndex;
+    }
+
+    T movedItem = std::move(items[fromIndex]);
+    items.erase(items.begin() + static_cast<std::ptrdiff_t>(fromIndex));
+    if (insertionIndex > fromIndex)
+    {
+        --insertionIndex;
+    }
+    items.insert(items.begin() + static_cast<std::ptrdiff_t>(insertionIndex),
+                 std::move(movedItem));
+    return insertionIndex;
+}
+
+inline int RemapIndexAfterMove(int index, int fromIndex, int toIndex)
+{
+    if (index == fromIndex)
+    {
+        return toIndex;
+    }
+    if (fromIndex < toIndex && index > fromIndex && index <= toIndex)
+    {
+        return index - 1;
+    }
+    if (toIndex < fromIndex && index >= toIndex && index < fromIndex)
+    {
+        return index + 1;
+    }
+    return index;
+}
 
 struct Track
 {

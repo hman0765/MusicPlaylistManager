@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "app_state.h"
 #include "playlist.h"
 
 namespace
@@ -21,6 +22,8 @@ constexpr wchar_t WindowClassName[] = L"MusicPlaylistManagerWindow";
 constexpr wchar_t WindowTitle[] = L"Music Playlist Manager";
 constexpr int SplitterWidth = 6;
 constexpr int MinimumPaneWidth = 120;
+constexpr int MinimumWindowWidth = 360;
+constexpr int MinimumWindowHeight = 240;
 constexpr int TitleColumnWidth = 180;
 constexpr int ArtistColumnWidth = 140;
 constexpr int AlbumColumnWidth = 160;
@@ -33,16 +36,85 @@ constexpr UINT CommandExportM3U8 = 1004;
 constexpr UINT CommandGetTrackMetadata = 1005;
 constexpr UINT CommandDeleteTracks = 1006;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
+constexpr UINT_PTR AppStateTimerId = 1;
+constexpr UINT AppStateTimerIntervalMs = 60'000;
 
 HWND playlistListView = nullptr;
 HWND trackListView = nullptr;
 int splitterX = 240;
+int savedWindowWidth = 900;
+int savedWindowHeight = 600;
 bool isDraggingSplitter = false;
 int splitterDragOffset = 0;
+int splitterXAtDragStart = 240;
+
+enum class InternalDragSource
+{
+    None,
+    Playlist,
+    Track
+};
+
+InternalDragSource internalDragSource = InternalDragSource::None;
+int draggedItemIndex = -1;
 
 std::vector<Playlist> playlists{{L"New Playlist", L"", {}, false}};
 int selectedPlaylistIndex = 0;
 bool isRefreshingPlaylistList = false;
+bool appStateDirty = false;
+bool appStateTrackingEnabled = false;
+
+void MarkAppStateDirty()
+{
+    if (appStateTrackingEnabled)
+    {
+        appStateDirty = true;
+    }
+}
+
+AppState CaptureCurrentAppState()
+{
+    AppState state{};
+    state.playlists = playlists;
+    state.selectedPlaylistIndex = selectedPlaylistIndex;
+    state.splitterX = splitterX;
+    state.windowWidth = savedWindowWidth;
+    state.windowHeight = savedWindowHeight;
+    return state;
+}
+
+bool SaveCurrentAppState()
+{
+    if (!appStateDirty)
+    {
+        return true;
+    }
+    if (!SaveAppState(CaptureCurrentAppState()))
+    {
+        return false;
+    }
+    appStateDirty = false;
+    return true;
+}
+
+void ApplyLoadedAppState(AppState state)
+{
+    playlists = std::move(state.playlists);
+    selectedPlaylistIndex = state.selectedPlaylistIndex;
+    splitterX = state.splitterX;
+    savedWindowWidth = state.windowWidth;
+    savedWindowHeight = state.windowHeight;
+}
+
+void ResetToDefaultAppState()
+{
+    playlists = {{L"New Playlist", L"", {}, false}};
+    selectedPlaylistIndex = 0;
+    splitterX = 240;
+    savedWindowWidth = 900;
+    savedWindowHeight = 600;
+    appStateDirty = false;
+}
 
 class ComApartment
 {
@@ -217,6 +289,7 @@ void DeleteSelectedTracks()
         }
     }
     playlist->isModified = true;
+    MarkAppStateDirty();
     RefreshSelectedTrackList();
 
     if (!playlist->tracks.empty())
@@ -251,6 +324,7 @@ void GetMetadataForSelectedTracks()
     if (updatedAnyTrack)
     {
         playlist->isModified = true;
+        MarkAppStateDirty();
     }
     RefreshSelectedTrackList();
     RestoreTrackSelection(selectedIndices);
@@ -292,6 +366,7 @@ void CreateNewPlaylist()
 {
     playlists.push_back(Playlist{MakeNewPlaylistName(), L"", {}, false});
     selectedPlaylistIndex = static_cast<int>(playlists.size()) - 1;
+    MarkAppStateDirty();
     RefreshPlaylistList(playlistListView, playlists);
     RefreshSelectedTrackList();
     SetFocus(playlistListView);
@@ -340,6 +415,7 @@ void DeleteSelectedPlaylist(HWND window)
         selectedPlaylistIndex = static_cast<int>(playlists.size()) - 1;
     }
 
+    MarkAppStateDirty();
     RefreshPlaylistList(playlistListView, playlists);
     RefreshSelectedTrackList();
 }
@@ -415,6 +491,7 @@ void ExportSelectedPlaylist(HWND window)
         SaveM3U8(*playlist, filePathBuffer.data());
         playlist->filePath = filePathBuffer.data();
         playlist->isModified = false;
+        MarkAppStateDirty();
         MessageBoxW(window, L"The playlist was exported successfully.",
                     WindowTitle, MB_OK | MB_ICONINFORMATION);
     }
@@ -432,7 +509,11 @@ void SelectPlaylist(int index)
         return;
     }
 
-    selectedPlaylistIndex = index;
+    if (selectedPlaylistIndex != index)
+    {
+        selectedPlaylistIndex = index;
+        MarkAppStateDirty();
+    }
     ListView_SetItemState(playlistListView, -1, 0,
                           LVIS_SELECTED | LVIS_FOCUSED);
     ListView_SetItemState(playlistListView, index,
@@ -568,6 +649,195 @@ void ShowTrackContextMenu(HWND window, LPARAM lParam)
     }
 }
 
+HWND GetInternalDragListView()
+{
+    switch (internalDragSource)
+    {
+    case InternalDragSource::Playlist:
+        return playlistListView;
+    case InternalDragSource::Track:
+        return trackListView;
+    default:
+        return nullptr;
+    }
+}
+
+void ClearInsertMark(HWND listView)
+{
+    if (listView == nullptr)
+    {
+        return;
+    }
+    LVINSERTMARK insertMark{};
+    insertMark.cbSize = sizeof(insertMark);
+    insertMark.iItem = -1;
+    SendMessageW(listView, LVM_SETINSERTMARK, 0,
+                 reinterpret_cast<LPARAM>(&insertMark));
+}
+
+int GetInsertionIndex(HWND window, HWND listView, POINT windowPoint)
+{
+    POINT listPoint = windowPoint;
+    ClientToScreen(window, &listPoint);
+    ScreenToClient(listView, &listPoint);
+
+    RECT client{};
+    GetClientRect(listView, &client);
+    if (!PtInRect(&client, listPoint))
+    {
+        return -1;
+    }
+
+    const int itemCount = ListView_GetItemCount(listView);
+    if (itemCount == 0)
+    {
+        return 0;
+    }
+
+    LVHITTESTINFO hitTest{};
+    hitTest.pt = listPoint;
+    const int hitIndex = ListView_HitTest(listView, &hitTest);
+    if (hitIndex >= 0)
+    {
+        RECT itemRect{};
+        ListView_GetItemRect(listView, hitIndex, &itemRect, LVIR_BOUNDS);
+        const int midpoint = itemRect.top +
+                             (itemRect.bottom - itemRect.top) / 2;
+        return listPoint.y < midpoint ? hitIndex : hitIndex + 1;
+    }
+
+    const int topIndex = ListView_GetTopIndex(listView);
+    RECT topItemRect{};
+    if (topIndex >= 0 &&
+        ListView_GetItemRect(listView, topIndex, &topItemRect, LVIR_BOUNDS) &&
+        listPoint.y < topItemRect.top)
+    {
+        return topIndex;
+    }
+    return itemCount;
+}
+
+void SetInsertMarkForIndex(HWND listView, int insertionIndex)
+{
+    ClearInsertMark(listView);
+    const int itemCount = ListView_GetItemCount(listView);
+    if (insertionIndex < 0 || itemCount == 0)
+    {
+        return;
+    }
+
+    LVINSERTMARK insertMark{};
+    insertMark.cbSize = sizeof(insertMark);
+    if (insertionIndex >= itemCount)
+    {
+        insertMark.dwFlags = LVIM_AFTER;
+        insertMark.iItem = itemCount - 1;
+    }
+    else
+    {
+        insertMark.iItem = insertionIndex;
+    }
+    SendMessageW(listView, LVM_SETINSERTMARK, 0,
+                 reinterpret_cast<LPARAM>(&insertMark));
+}
+
+bool UpdateInternalDragFeedback(HWND window, POINT windowPoint)
+{
+    HWND listView = GetInternalDragListView();
+    if (listView == nullptr)
+    {
+        return false;
+    }
+    const int insertionIndex = GetInsertionIndex(window, listView, windowPoint);
+    SetInsertMarkForIndex(listView, insertionIndex);
+    return insertionIndex >= 0;
+}
+
+void BeginInternalDrag(HWND window, InternalDragSource source, int itemIndex)
+{
+    if (source == InternalDragSource::None || itemIndex < 0 ||
+        isDraggingSplitter)
+    {
+        return;
+    }
+
+    internalDragSource = source;
+    draggedItemIndex = itemIndex;
+    SetCapture(window);
+
+    POINT point{};
+    GetCursorPos(&point);
+    ScreenToClient(window, &point);
+    UpdateInternalDragFeedback(window, point);
+    SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+}
+
+void CancelInternalDrag(HWND window, bool releaseCapture)
+{
+    ClearInsertMark(playlistListView);
+    ClearInsertMark(trackListView);
+    internalDragSource = InternalDragSource::None;
+    draggedItemIndex = -1;
+    if (releaseCapture && GetCapture() == window)
+    {
+        ReleaseCapture();
+    }
+}
+
+void FinishInternalDrop(HWND window, POINT windowPoint)
+{
+    const InternalDragSource source = internalDragSource;
+    const int fromIndex = draggedItemIndex;
+    HWND listView = GetInternalDragListView();
+    const int insertionIndex = listView == nullptr
+        ? -1
+        : GetInsertionIndex(window, listView, windowPoint);
+    CancelInternalDrag(window, true);
+
+    if (insertionIndex < 0 || fromIndex < 0)
+    {
+        return;
+    }
+
+    if (source == InternalDragSource::Playlist &&
+        fromIndex < static_cast<int>(playlists.size()))
+    {
+        const int newIndex = static_cast<int>(MoveVectorItem(
+            playlists, static_cast<std::size_t>(fromIndex),
+            static_cast<std::size_t>(insertionIndex)));
+        if (newIndex != fromIndex)
+        {
+            selectedPlaylistIndex = RemapIndexAfterMove(
+                selectedPlaylistIndex, fromIndex, newIndex);
+            MarkAppStateDirty();
+            RefreshPlaylistList(playlistListView, playlists);
+            RefreshSelectedTrackList();
+        }
+        return;
+    }
+
+    if (source == InternalDragSource::Track)
+    {
+        Playlist* playlist = GetSelectedPlaylist();
+        if (playlist == nullptr ||
+            fromIndex >= static_cast<int>(playlist->tracks.size()))
+        {
+            return;
+        }
+
+        const int newIndex = static_cast<int>(MoveVectorItem(
+            playlist->tracks, static_cast<std::size_t>(fromIndex),
+            static_cast<std::size_t>(insertionIndex)));
+        if (newIndex != fromIndex)
+        {
+            playlist->isModified = true;
+            MarkAppStateDirty();
+            RefreshSelectedTrackList();
+            RestoreTrackSelection({newIndex});
+        }
+    }
+}
+
 void LayoutChildren(HWND window)
 {
     RECT client{};
@@ -681,6 +951,7 @@ void ImportM3U8(HWND window, const std::wstring& filePath)
     {
         playlists.push_back(std::move(loadedPlaylist));
         selectedPlaylistIndex = static_cast<int>(playlists.size()) - 1;
+        MarkAppStateDirty();
         RefreshPlaylistList(playlistListView, playlists);
         RefreshSelectedTrackList();
         return;
@@ -697,6 +968,7 @@ void ImportM3U8(HWND window, const std::wstring& filePath)
         std::make_move_iterator(loadedPlaylist.tracks.begin()),
         std::make_move_iterator(loadedPlaylist.tracks.end()));
     selectedPlaylist->isModified = true;
+    MarkAppStateDirty();
     RefreshSelectedTrackList();
 }
 
@@ -743,6 +1015,7 @@ void HandleDroppedFiles(HWND window, HDROP drop)
         }
         if (addedAudioTrack)
         {
+            MarkAppStateDirty();
             RefreshSelectedTrackList();
         }
     }
@@ -786,6 +1059,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         RefreshPlaylistList(playlistListView, playlists);
         RefreshSelectedTrackList();
         DragAcceptFiles(window, TRUE);
+        SetTimer(window, AppStateTimerId, AppStateTimerIntervalMs, nullptr);
         return 0;
 
     case WM_COMMAND:
@@ -815,6 +1089,33 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
     case WM_NOTIFY:
     {
         NMHDR* header = reinterpret_cast<NMHDR*>(lParam);
+        if (header->code == LVN_BEGINDRAG)
+        {
+            NMLISTVIEW* drag = reinterpret_cast<NMLISTVIEW*>(lParam);
+            if (header->hwndFrom == playlistListView)
+            {
+                BeginInternalDrag(window, InternalDragSource::Playlist,
+                                  drag->iItem);
+                return 0;
+            }
+            if (header->hwndFrom == trackListView &&
+                GetSelectedPlaylist() != nullptr)
+            {
+                BeginInternalDrag(window, InternalDragSource::Track,
+                                  drag->iItem);
+                return 0;
+            }
+        }
+        if (header->code == LVN_KEYDOWN &&
+            internalDragSource != InternalDragSource::None)
+        {
+            NMLVKEYDOWN* key = reinterpret_cast<NMLVKEYDOWN*>(lParam);
+            if (key->wVKey == VK_ESCAPE)
+            {
+                CancelInternalDrag(window, true);
+            }
+            return 0;
+        }
         if (header->hwndFrom == trackListView && header->code == LVN_KEYDOWN)
         {
             NMLVKEYDOWN* key = reinterpret_cast<NMLVKEYDOWN*>(lParam);
@@ -840,7 +1141,11 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
                 change->iItem < static_cast<int>(playlists.size());
             if (becameSelected)
             {
-                selectedPlaylistIndex = change->iItem;
+                if (selectedPlaylistIndex != change->iItem)
+                {
+                    selectedPlaylistIndex = change->iItem;
+                    MarkAppStateDirty();
+                }
                 RefreshSelectedTrackList();
             }
             return 0;
@@ -858,6 +1163,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
                     edit->item.pszText;
                 playlists[static_cast<std::size_t>(edit->item.iItem)].isModified =
                     true;
+                MarkAppStateDirty();
                 PostMessageW(window, MessageRefreshPlaylistList, 0, 0);
             }
             return FALSE;
@@ -898,6 +1204,20 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
 
     case WM_SIZE:
         LayoutChildren(window);
+        if (wParam != SIZE_MINIMIZED)
+        {
+            RECT windowRect{};
+            GetWindowRect(window, &windowRect);
+            const int width = windowRect.right - windowRect.left;
+            const int height = windowRect.bottom - windowRect.top;
+            if (width >= MinimumWindowWidth && height >= MinimumWindowHeight &&
+                (width != savedWindowWidth || height != savedWindowHeight))
+            {
+                savedWindowWidth = width;
+                savedWindowHeight = height;
+                MarkAppStateDirty();
+            }
+        }
         return 0;
 
     case WM_LBUTTONDOWN:
@@ -906,6 +1226,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         if (IsPointOnSplitter(window, point))
         {
             isDraggingSplitter = true;
+            splitterXAtDragStart = splitterX;
             splitterDragOffset = point.x - splitterX;
             SetCapture(window);
             SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
@@ -919,6 +1240,12 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             splitterX = GET_X_LPARAM(lParam) - splitterDragOffset;
             LayoutChildren(window);
         }
+        else if (internalDragSource != InternalDragSource::None)
+        {
+            const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            const bool canDrop = UpdateInternalDragFeedback(window, point);
+            SetCursor(LoadCursorW(nullptr, canDrop ? IDC_SIZEALL : IDC_NO));
+        }
         return 0;
 
     case WM_LBUTTONUP:
@@ -926,14 +1253,38 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         {
             isDraggingSplitter = false;
             ReleaseCapture();
+            if (splitterX != splitterXAtDragStart)
+            {
+                MarkAppStateDirty();
+            }
+        }
+        else if (internalDragSource != InternalDragSource::None)
+        {
+            const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            FinishInternalDrop(window, point);
         }
         return 0;
 
     case WM_CAPTURECHANGED:
+        if (isDraggingSplitter && splitterX != splitterXAtDragStart)
+        {
+            MarkAppStateDirty();
+        }
         isDraggingSplitter = false;
+        CancelInternalDrag(window, false);
+        return 0;
+
+    case WM_CANCELMODE:
+        isDraggingSplitter = false;
+        CancelInternalDrag(window, true);
         return 0;
 
     case WM_SETCURSOR:
+        if (internalDragSource != InternalDragSource::None)
+        {
+            SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+            return TRUE;
+        }
         if (LOWORD(lParam) == HTCLIENT)
         {
             POINT point{};
@@ -951,6 +1302,23 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         HandleDroppedFiles(window, reinterpret_cast<HDROP>(wParam));
         return 0;
 
+    case WM_TIMER:
+        if (wParam == AppStateTimerId && appStateDirty)
+        {
+            SaveCurrentAppState();
+        }
+        return 0;
+
+    case WM_CLOSE:
+        if (appStateDirty && !SaveCurrentAppState())
+        {
+            MessageBoxW(window,
+                        L"The application state could not be saved.",
+                        WindowTitle, MB_OK | MB_ICONWARNING);
+        }
+        DestroyWindow(window);
+        return 0;
+
     case WM_PAINT:
     {
         PAINTSTRUCT paint{};
@@ -965,10 +1333,13 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
     }
 
     case WM_GETMINMAXINFO:
-        reinterpret_cast<MINMAXINFO*>(lParam)->ptMinTrackSize = {360, 240};
+        reinterpret_cast<MINMAXINFO*>(lParam)->ptMinTrackSize = {
+            MinimumWindowWidth, MinimumWindowHeight
+        };
         return 0;
 
     case WM_DESTROY:
+        KillTimer(window, AppStateTimerId);
         PostQuitMessage(0);
         return 0;
     }
@@ -980,6 +1351,21 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     ComApartment comApartment;
+
+    AppState loadedState{};
+    const AppStateLoadResult loadResult = LoadAppState(loadedState);
+    if (loadResult == AppStateLoadResult::Loaded)
+    {
+        ApplyLoadedAppState(std::move(loadedState));
+    }
+    else if (loadResult == AppStateLoadResult::Failed)
+    {
+        ResetToDefaultAppState();
+        MessageBoxW(nullptr,
+                    L"Saved application state could not be loaded.\n"
+                    L"A new session will be started.",
+                    WindowTitle, MB_OK | MB_ICONWARNING);
+    }
 
     INITCOMMONCONTROLSEX commonControls{};
     commonControls.dwSize = sizeof(commonControls);
@@ -1010,7 +1396,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
     HWND window = CreateWindowExW(
         0, WindowClassName, WindowTitle, WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 900, 600,
+        CW_USEDEFAULT, CW_USEDEFAULT, savedWindowWidth, savedWindowHeight,
         nullptr, nullptr, instance, nullptr);
     if (window == nullptr)
     {
@@ -1021,6 +1407,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
     ShowWindow(window, showCommand);
     UpdateWindow(window);
+    appStateTrackingEnabled = true;
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0)
