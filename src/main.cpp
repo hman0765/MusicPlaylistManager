@@ -5,7 +5,10 @@
 
 #include <algorithm>
 #include <cwctype>
+#include <exception>
+#include <iterator>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "playlist.h"
@@ -128,10 +131,16 @@ void RefreshTrackList(HWND listView, const Playlist& playlist)
     {
         const int row = static_cast<int>(index);
         const Track& track = playlist.tracks[index];
-        InsertListItem(listView, row, track.title);
+        const std::wstring displayTitle = track.title.empty()
+            ? track.extinfText
+            : track.title;
+        const std::wstring displayDuration = track.duration.empty()
+            ? FormatDuration(track.extinfDuration)
+            : track.duration;
+        InsertListItem(listView, row, displayTitle);
         SetListItemText(listView, row, 1, track.artist);
         SetListItemText(listView, row, 2, track.album);
-        SetListItemText(listView, row, 3, track.duration);
+        SetListItemText(listView, row, 3, displayDuration);
         SetListItemText(listView, row, 4, track.path);
     }
 }
@@ -361,6 +370,88 @@ bool IsPointInTrackPane(HWND window, POINT point)
     return PtInRect(&trackRect, point) != FALSE;
 }
 
+enum class M3U8LoadMode
+{
+    Cancel,
+    NewPlaylist,
+    AppendToCurrent
+};
+
+M3U8LoadMode ChooseM3U8LoadMode(HWND window, const std::wstring& filePath)
+{
+    if (GetSelectedPlaylist() == nullptr)
+    {
+        const std::wstring message =
+            L"No playlist is selected.\n\nLoad this m3u8 as a new playlist?\n\n" +
+            filePath;
+        return MessageBoxW(window, message.c_str(), WindowTitle,
+                           MB_OKCANCEL | MB_ICONQUESTION) == IDOK
+            ? M3U8LoadMode::NewPlaylist
+            : M3U8LoadMode::Cancel;
+    }
+
+    const std::wstring message =
+        L"Load this m3u8 playlist?\n\n" + filePath +
+        L"\n\nYes: Add as a new playlist"
+        L"\nNo: Append to the current playlist"
+        L"\nCancel: Do nothing";
+    switch (MessageBoxW(window, message.c_str(), WindowTitle,
+                        MB_YESNOCANCEL | MB_ICONQUESTION))
+    {
+    case IDYES:
+        return M3U8LoadMode::NewPlaylist;
+    case IDNO:
+        return M3U8LoadMode::AppendToCurrent;
+    default:
+        return M3U8LoadMode::Cancel;
+    }
+}
+
+void ImportM3U8(HWND window, const std::wstring& filePath)
+{
+    const M3U8LoadMode mode = ChooseM3U8LoadMode(window, filePath);
+    if (mode == M3U8LoadMode::Cancel)
+    {
+        return;
+    }
+
+    Playlist loadedPlaylist;
+    try
+    {
+        loadedPlaylist = LoadM3U8(filePath);
+    }
+    catch (const std::exception&)
+    {
+        MessageBoxW(window,
+                    L"Failed to load the m3u8 file.\n"
+                    L"The file must be readable UTF-8 text.",
+                    WindowTitle, MB_OK | MB_ICONERROR);
+        return;
+    }
+
+    if (mode == M3U8LoadMode::NewPlaylist)
+    {
+        playlists.push_back(std::move(loadedPlaylist));
+        selectedPlaylistIndex = static_cast<int>(playlists.size()) - 1;
+        RefreshPlaylistList(playlistListView, playlists);
+        RefreshSelectedTrackList();
+        return;
+    }
+
+    Playlist* selectedPlaylist = GetSelectedPlaylist();
+    if (selectedPlaylist == nullptr)
+    {
+        return;
+    }
+
+    selectedPlaylist->tracks.insert(
+        selectedPlaylist->tracks.end(),
+        std::make_move_iterator(loadedPlaylist.tracks.begin()),
+        std::make_move_iterator(loadedPlaylist.tracks.end()));
+    selectedPlaylist->isModified = true;
+    RefreshSelectedTrackList();
+}
+
 void HandleDroppedFiles(HWND window, HDROP drop)
 {
     POINT dropPoint{};
@@ -370,29 +461,40 @@ void HandleDroppedFiles(HWND window, HDROP drop)
 
     if (droppedInTrackPane)
     {
-        Playlist* selectedPlaylist = GetSelectedPlaylist();
-        if (selectedPlaylist == nullptr)
+        bool addedAudioTrack = false;
+        bool showedNoPlaylistMessage = false;
+        const UINT fileCount = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+        for (UINT index = 0; index < fileCount; ++index)
         {
-            MessageBoxW(window,
-                        L"No playlist selected. Create a playlist first.",
-                        WindowTitle, MB_OK | MB_ICONINFORMATION);
-        }
-        else
-        {
-            const UINT fileCount = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
-            for (UINT index = 0; index < fileCount; ++index)
-            {
-                const UINT length = DragQueryFileW(drop, index, nullptr, 0);
-                std::vector<wchar_t> buffer(length + 1);
-                DragQueryFileW(drop, index, buffer.data(),
-                               static_cast<UINT>(buffer.size()));
+            const UINT length = DragQueryFileW(drop, index, nullptr, 0);
+            std::vector<wchar_t> buffer(length + 1);
+            DragQueryFileW(drop, index, buffer.data(),
+                           static_cast<UINT>(buffer.size()));
 
-                const std::wstring path(buffer.data());
-                if (IsSupportedAudioPath(path))
+            const std::wstring path(buffer.data());
+            if (IsM3U8Path(path))
+            {
+                ImportM3U8(window, path);
+                continue;
+            }
+            if (IsSupportedAudioPath(path))
+            {
+                if (Playlist* selectedPlaylist = GetSelectedPlaylist())
                 {
                     AddTrack(*selectedPlaylist, CreateTrackFromFile(path));
+                    addedAudioTrack = true;
+                }
+                else if (!showedNoPlaylistMessage)
+                {
+                    MessageBoxW(window,
+                                L"No playlist selected. Create a playlist first.",
+                                WindowTitle, MB_OK | MB_ICONINFORMATION);
+                    showedNoPlaylistMessage = true;
                 }
             }
+        }
+        if (addedAudioTrack)
+        {
             RefreshSelectedTrackList();
         }
     }

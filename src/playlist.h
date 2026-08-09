@@ -10,6 +10,8 @@ struct Track
     std::wstring album;
     std::wstring duration;
     std::wstring path;
+    std::wstring extinfText;
+    int extinfDuration = -1;
 };
 
 struct Playlist
@@ -21,5 +23,8 @@ struct Playlist
 };
 
 bool IsSupportedAudioPath(const std::wstring& path);
+bool IsM3U8Path(const std::wstring& path);
 Track CreateTrackFromFile(const std::wstring& path);
+Playlist LoadM3U8(const std::wstring& filePath);
+std::wstring FormatDuration(int seconds);
 void AddTrack(Playlist& playlist, Track track);
