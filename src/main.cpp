@@ -3,6 +3,7 @@
 #include <commdlg.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <shlobj.h>
 
 #include <algorithm>
 #include <array>
@@ -34,6 +35,7 @@ constexpr UINT CommandDeletePlaylist = 1003;
 constexpr UINT CommandExportM3U8 = 1004;
 constexpr UINT CommandGetTrackMetadata = 1005;
 constexpr UINT CommandDeleteTracks = 1006;
+constexpr UINT CommandOpenTracksInExplorer = 1007;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
 constexpr UINT_PTR AppStateTimerId = 1;
 constexpr UINT AppStateTimerIntervalMs = 60'000;
@@ -361,6 +363,65 @@ std::vector<std::wstring> GetSelectedExistingTrackPaths()
         }
     }
     return paths;
+}
+
+bool OpenFileInExplorer(const std::wstring& path)
+{
+    if (path.empty())
+    {
+        return false;
+    }
+
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(std::filesystem::path(path), error) ||
+        error)
+    {
+        return false;
+    }
+
+    PIDLIST_ABSOLUTE fileItemId = nullptr;
+    if (FAILED(SHParseDisplayName(path.c_str(), nullptr, &fileItemId,
+                                  0, nullptr)) ||
+        fileItemId == nullptr)
+    {
+        return false;
+    }
+
+    PIDLIST_ABSOLUTE folderItemId = ILCloneFull(fileItemId);
+    if (folderItemId == nullptr || !ILRemoveLastID(folderItemId))
+    {
+        CoTaskMemFree(folderItemId);
+        CoTaskMemFree(fileItemId);
+        return false;
+    }
+
+    PCUITEMID_CHILD childItemId = ILFindLastID(fileItemId);
+    const HRESULT result = SHOpenFolderAndSelectItems(
+        folderItemId, 1, &childItemId, 0);
+    CoTaskMemFree(folderItemId);
+    CoTaskMemFree(fileItemId);
+    return SUCCEEDED(result);
+}
+
+void OpenSelectedTracksInExplorer()
+{
+    Playlist* playlist = GetSelectedPlaylist();
+    const std::vector<int> selectedIndices =
+        GetSelectedTrackIndices(trackListView);
+    if (playlist == nullptr || selectedIndices.empty() ||
+        selectedIndices.size() > 10)
+    {
+        return;
+    }
+
+    for (const int index : selectedIndices)
+    {
+        if (index >= 0 && index < static_cast<int>(playlist->tracks.size()))
+        {
+            OpenFileInExplorer(
+                playlist->tracks[static_cast<std::size_t>(index)].path);
+        }
+    }
 }
 
 void StartSelectedTrackDrag(int dragItemIndex)
@@ -886,11 +947,15 @@ void ShowTrackContextMenu(HWND window, LPARAM lParam)
         return;
     }
 
-    const UINT selectionState = GetSelectedTrackIndices(trackListView).empty()
-        ? MF_GRAYED
-        : MF_ENABLED;
+    const int selectedCount = ListView_GetSelectedCount(trackListView);
+    const UINT selectionState = selectedCount == 0 ? MF_GRAYED : MF_ENABLED;
+    const UINT explorerState = selectedCount >= 1 && selectedCount <= 10
+        ? MF_ENABLED
+        : MF_GRAYED;
     AppendMenuW(menu, MF_STRING | selectionState,
                 CommandGetTrackMetadata, L"Get Metadata");
+    AppendMenuW(menu, MF_STRING | explorerState,
+                CommandOpenTracksInExplorer, L"Open in Explorer");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | selectionState,
                 CommandDeleteTracks, L"Delete Track");
@@ -1144,6 +1209,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             return 0;
         case CommandDeleteTracks:
             DeleteSelectedTracks();
+            return 0;
+        case CommandOpenTracksInExplorer:
+            OpenSelectedTracksInExplorer();
             return 0;
         }
         break;
