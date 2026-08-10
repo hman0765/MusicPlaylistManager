@@ -410,6 +410,121 @@ void RestoreTrackSelection(const std::vector<int>& indices)
     }
 }
 
+bool AreIndicesContiguous(const std::vector<int>& indices)
+{
+    if (indices.empty())
+    {
+        return false;
+    }
+    for (std::size_t index = 1; index < indices.size(); ++index)
+    {
+        if (indices[index] != indices.front() + static_cast<int>(index))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool MoveSelectedPlaylist(int direction)
+{
+    if ((direction != -1 && direction != 1) ||
+        selectedPlaylistIndex < 0 ||
+        selectedPlaylistIndex >= static_cast<int>(playlists.size()))
+    {
+        return false;
+    }
+
+    const int destinationIndex = selectedPlaylistIndex + direction;
+    if (destinationIndex < 0 ||
+        destinationIndex >= static_cast<int>(playlists.size()))
+    {
+        return false;
+    }
+
+    std::swap(playlists[static_cast<std::size_t>(selectedPlaylistIndex)],
+              playlists[static_cast<std::size_t>(destinationIndex)]);
+    selectedPlaylistIndex = destinationIndex;
+    RefreshPlaylistList(playlistListView, playlists);
+    SetFocus(playlistListView);
+    MarkAppStateDirty();
+    return true;
+}
+
+bool MoveSelectedTracks(int direction)
+{
+    Playlist* playlist = GetSelectedPlaylist();
+    const std::vector<int> selectedIndices =
+        GetSelectedTrackIndices(trackListView);
+    if ((direction != -1 && direction != 1) || playlist == nullptr ||
+        !AreIndicesContiguous(selectedIndices))
+    {
+        return false;
+    }
+
+    const int firstSelected = selectedIndices.front();
+    const int lastSelected = selectedIndices.back();
+    const int trackCount = static_cast<int>(playlist->tracks.size());
+    if (firstSelected < 0 || lastSelected >= trackCount ||
+        (direction < 0 && firstSelected == 0) ||
+        (direction > 0 && lastSelected == trackCount - 1) ||
+        firstSelected > lastSelected)
+    {
+        return false;
+    }
+
+    auto begin = playlist->tracks.begin();
+    if (direction < 0)
+    {
+        std::rotate(begin + firstSelected - 1, begin + firstSelected,
+                    begin + lastSelected + 1);
+    }
+    else
+    {
+        std::rotate(begin + firstSelected, begin + lastSelected + 1,
+                    begin + lastSelected + 2);
+    }
+
+    std::vector<int> movedIndices = selectedIndices;
+    for (int& index : movedIndices)
+    {
+        index += direction;
+    }
+    playlist->isModified = true;
+    RefreshSelectedTrackList();
+    RestoreTrackSelection(movedIndices);
+    SetFocus(trackListView);
+    MarkAppStateDirty();
+    return true;
+}
+
+bool HandleAltArrowKey(const MSG& message)
+{
+    if ((message.message != WM_KEYDOWN &&
+         message.message != WM_SYSKEYDOWN) ||
+        (message.wParam != VK_UP && message.wParam != VK_DOWN) ||
+        (GetKeyState(VK_MENU) & 0x8000) == 0 ||
+        (GetKeyState(VK_CONTROL) & 0x8000) != 0 ||
+        (GetKeyState(VK_SHIFT) & 0x8000) != 0)
+    {
+        return false;
+    }
+
+    const int direction = message.wParam == VK_UP ? -1 : 1;
+    const HWND focusedWindow = GetFocus();
+    if (focusedWindow == playlistListView)
+    {
+        MoveSelectedPlaylist(direction);
+        return true;
+    }
+    if (focusedWindow == trackListView)
+    {
+        MoveSelectedTracks(direction);
+        return true;
+    }
+    return false;
+}
+
 void DeleteSelectedTracks()
 {
     Playlist* playlist = GetSelectedPlaylist();
@@ -1368,6 +1483,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0)
     {
+        if (HandleAltArrowKey(message))
+        {
+            continue;
+        }
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
