@@ -196,10 +196,22 @@ std::wstring SerializeState(const AppState& state)
               std::to_wstring(state.selectedPlaylistIndex) + L",\n";
     output += L"  \"gui\": {\n";
     output += L"    \"splitterX\": " + std::to_wstring(state.splitterX) + L",\n";
+    output += L"    \"windowX\": " + std::to_wstring(state.windowX) + L",\n";
+    output += L"    \"windowY\": " + std::to_wstring(state.windowY) + L",\n";
     output += L"    \"windowWidth\": " +
               std::to_wstring(state.windowWidth) + L",\n";
     output += L"    \"windowHeight\": " +
-              std::to_wstring(state.windowHeight) + L"\n";
+              std::to_wstring(state.windowHeight) + L",\n";
+    output += L"    \"trackColumnWidths\": [";
+    for (std::size_t index = 0; index < state.trackColumnWidths.size(); ++index)
+    {
+        if (index > 0)
+        {
+            output += L", ";
+        }
+        output += std::to_wstring(state.trackColumnWidths[index]);
+    }
+    output += L"]\n";
     output += L"  },\n";
     output += L"  \"playlists\": [";
     if (!state.playlists.empty())
@@ -586,12 +598,44 @@ void ReadGui(JsonReader& reader, AppState& state)
         if (name == L"splitterX") { state.splitterX = ReadInt(reader); fields |= 1U << 0; }
         else if (name == L"windowWidth") { state.windowWidth = ReadInt(reader); fields |= 1U << 1; }
         else if (name == L"windowHeight") { state.windowHeight = ReadInt(reader); fields |= 1U << 2; }
+        else if (name == L"windowX") { state.windowX = ReadInt(reader); fields |= 1U << 3; }
+        else if (name == L"windowY") { state.windowY = ReadInt(reader); fields |= 1U << 4; }
+        else if (name == L"trackColumnWidths")
+        {
+            std::array<int, TrackColumnCount> widths = DefaultTrackColumnWidths;
+            std::size_t index = 0;
+            bool hasExpectedCount = true;
+            reader.ReadArray([&]() {
+                const int width = ReadInt(reader);
+                if (index < widths.size())
+                {
+                    widths[index] = width >= 24 && width <= 4096
+                        ? width
+                        : DefaultTrackColumnWidths[index];
+                }
+                else
+                {
+                    hasExpectedCount = false;
+                }
+                ++index;
+            });
+            if (hasExpectedCount && index == widths.size())
+            {
+                state.trackColumnWidths = widths;
+            }
+            else
+            {
+                state.trackColumnWidths = DefaultTrackColumnWidths;
+            }
+            fields |= 1U << 5;
+        }
         else reader.SkipValue();
     });
-    if (fields != 0x07U)
+    if ((fields & 0x07U) != 0x07U)
     {
         throw std::runtime_error("GUI state is incomplete.");
     }
+    state.hasWindowPosition = (fields & 0x18U) == 0x18U;
 }
 
 AppState DeserializeState(const std::wstring& text)

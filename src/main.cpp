@@ -5,11 +5,13 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <array>
 #include <cwchar>
 #include <cwctype>
 #include <exception>
 #include <filesystem>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -26,11 +28,6 @@ constexpr int SplitterWidth = 6;
 constexpr int MinimumPaneWidth = 120;
 constexpr int MinimumWindowWidth = 360;
 constexpr int MinimumWindowHeight = 240;
-constexpr int TitleColumnWidth = 180;
-constexpr int ArtistColumnWidth = 140;
-constexpr int AlbumColumnWidth = 160;
-constexpr int DurationColumnWidth = 85;
-constexpr int MinimumPathColumnWidth = 240;
 constexpr UINT CommandNewPlaylist = 1001;
 constexpr UINT CommandRenamePlaylist = 1002;
 constexpr UINT CommandDeletePlaylist = 1003;
@@ -41,11 +38,17 @@ constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
 constexpr UINT_PTR AppStateTimerId = 1;
 constexpr UINT AppStateTimerIntervalMs = 60'000;
 
+HWND mainWindow = nullptr;
 HWND playlistListView = nullptr;
 HWND trackListView = nullptr;
 int splitterX = 240;
+int savedWindowX = 0;
+int savedWindowY = 0;
+bool hasSavedWindowPosition = false;
 int savedWindowWidth = 900;
 int savedWindowHeight = 600;
+std::array<int, TrackColumnCount> trackColumnWidths =
+    DefaultTrackColumnWidths;
 bool isDraggingSplitter = false;
 int splitterDragOffset = 0;
 int splitterXAtDragStart = 240;
@@ -71,8 +74,37 @@ AppState CaptureCurrentAppState()
     state.playlists = playlists;
     state.selectedPlaylistIndex = selectedPlaylistIndex;
     state.splitterX = splitterX;
-    state.windowWidth = savedWindowWidth;
-    state.windowHeight = savedWindowHeight;
+    RECT windowRect{};
+    if (mainWindow != nullptr && !IsIconic(mainWindow) &&
+        GetWindowRect(mainWindow, &windowRect))
+    {
+        state.windowX = windowRect.left;
+        state.windowY = windowRect.top;
+        state.hasWindowPosition = true;
+        state.windowWidth = windowRect.right - windowRect.left;
+        state.windowHeight = windowRect.bottom - windowRect.top;
+    }
+    else
+    {
+        state.windowX = savedWindowX;
+        state.windowY = savedWindowY;
+        state.hasWindowPosition = hasSavedWindowPosition;
+        state.windowWidth = savedWindowWidth;
+        state.windowHeight = savedWindowHeight;
+    }
+    state.trackColumnWidths = trackColumnWidths;
+    if (trackListView != nullptr)
+    {
+        for (std::size_t index = 0; index < TrackColumnCount; ++index)
+        {
+            const int width = ListView_GetColumnWidth(
+                trackListView, static_cast<int>(index));
+            if (width > 0)
+            {
+                state.trackColumnWidths[index] = width;
+            }
+        }
+    }
     return state;
 }
 
@@ -95,8 +127,12 @@ void ApplyLoadedAppState(AppState state)
     playlists = std::move(state.playlists);
     selectedPlaylistIndex = state.selectedPlaylistIndex;
     splitterX = state.splitterX;
+    savedWindowX = state.windowX;
+    savedWindowY = state.windowY;
+    hasSavedWindowPosition = state.hasWindowPosition;
     savedWindowWidth = state.windowWidth;
     savedWindowHeight = state.windowHeight;
+    trackColumnWidths = state.trackColumnWidths;
 }
 
 void ResetToDefaultAppState()
@@ -104,9 +140,61 @@ void ResetToDefaultAppState()
     playlists = {{L"New Playlist", L"", {}, false}};
     selectedPlaylistIndex = 0;
     splitterX = 240;
+    savedWindowX = 0;
+    savedWindowY = 0;
+    hasSavedWindowPosition = false;
     savedWindowWidth = 900;
     savedWindowHeight = 600;
+    trackColumnWidths = DefaultTrackColumnWidths;
     appStateDirty = false;
+}
+
+void KeepSavedWindowPositionOnScreen()
+{
+    if (!hasSavedWindowPosition)
+    {
+        return;
+    }
+
+    const auto addWithoutOverflow = [](int position, int size) {
+        const long long result = static_cast<long long>(position) + size;
+        return static_cast<LONG>(std::clamp(
+            result,
+            static_cast<long long>(std::numeric_limits<LONG>::min()),
+            static_cast<long long>(std::numeric_limits<LONG>::max())));
+    };
+    RECT savedRect{savedWindowX, savedWindowY,
+                   addWithoutOverflow(savedWindowX, savedWindowWidth),
+                   addWithoutOverflow(savedWindowY, savedWindowHeight)};
+    const HMONITOR monitor = MonitorFromRect(
+        &savedRect, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitorInfo{};
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    if (monitor == nullptr || !GetMonitorInfoW(monitor, &monitorInfo))
+    {
+        hasSavedWindowPosition = false;
+        return;
+    }
+
+    // Keep part of the title bar reachable even after the monitor layout changes.
+    constexpr int MinimumVisibleTitleWidth = 120;
+    constexpr int VisibleTitleHeight = 32;
+    const int visibleWidth = std::min(savedWindowWidth,
+                                      MinimumVisibleTitleWidth);
+    const int previousX = savedWindowX;
+    const int previousY = savedWindowY;
+    savedWindowX = std::clamp(
+        savedWindowX,
+        static_cast<int>(monitorInfo.rcWork.left) - savedWindowWidth +
+            visibleWidth,
+        static_cast<int>(monitorInfo.rcWork.right) - visibleWidth);
+    savedWindowY = std::clamp(
+        savedWindowY, static_cast<int>(monitorInfo.rcWork.top),
+        static_cast<int>(monitorInfo.rcWork.bottom) - VisibleTitleHeight);
+    if (savedWindowX != previousX || savedWindowY != previousY)
+    {
+        appStateDirty = true;
+    }
 }
 
 class OleApartment
@@ -727,12 +815,6 @@ void LayoutChildren(HWND window)
     MoveWindow(trackListView, rightX, 0, rightWidth, height, TRUE);
 
     ListView_SetColumnWidth(playlistListView, 0, std::max(0, splitterX - 4));
-    const int fixedTrackColumnsWidth = TitleColumnWidth + ArtistColumnWidth +
-                                       AlbumColumnWidth + DurationColumnWidth;
-    ListView_SetColumnWidth(
-        trackListView, 4,
-        std::max(MinimumPathColumnWidth,
-                 rightWidth - fixedTrackColumnsWidth - 4));
     InvalidateRect(window, nullptr, FALSE);
 }
 
@@ -916,11 +998,11 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         ListView_SetExtendedListViewStyle(
             trackListView, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
         InsertColumn(playlistListView, 0, L"Playlist", splitterX);
-        InsertColumn(trackListView, 0, L"Title", TitleColumnWidth);
-        InsertColumn(trackListView, 1, L"Artist", ArtistColumnWidth);
-        InsertColumn(trackListView, 2, L"Album", AlbumColumnWidth);
-        InsertColumn(trackListView, 3, L"Duration", DurationColumnWidth);
-        InsertColumn(trackListView, 4, L"Path", MinimumPathColumnWidth);
+        InsertColumn(trackListView, 0, L"Title", trackColumnWidths[0]);
+        InsertColumn(trackListView, 1, L"Artist", trackColumnWidths[1]);
+        InsertColumn(trackListView, 2, L"Album", trackColumnWidths[2]);
+        InsertColumn(trackListView, 3, L"Duration", trackColumnWidths[3]);
+        InsertColumn(trackListView, 4, L"Path", trackColumnWidths[4]);
         RefreshPlaylistList(playlistListView, playlists);
         RefreshSelectedTrackList();
         DragAcceptFiles(window, TRUE);
@@ -954,6 +1036,16 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
     case WM_NOTIFY:
     {
         NMHDR* header = reinterpret_cast<NMHDR*>(lParam);
+        const HWND trackHeader = trackListView == nullptr
+                                     ? nullptr
+                                     : ListView_GetHeader(trackListView);
+        if (header->hwndFrom == trackHeader &&
+            (header->code == HDN_ENDTRACKW ||
+             header->code == HDN_ENDTRACKA))
+        {
+            MarkAppStateDirty();
+            return 0;
+        }
         if (header->code == LVN_BEGINDRAG)
         {
             NMLISTVIEW* drag = reinterpret_cast<NMLISTVIEW*>(lParam);
@@ -1071,6 +1163,23 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         }
         return 0;
 
+    case WM_MOVE:
+        if (wParam == 0 && !IsIconic(window))
+        {
+            RECT windowRect{};
+            if (GetWindowRect(window, &windowRect) &&
+                (!hasSavedWindowPosition ||
+                 windowRect.left != savedWindowX ||
+                 windowRect.top != savedWindowY))
+            {
+                savedWindowX = windowRect.left;
+                savedWindowY = windowRect.top;
+                hasSavedWindowPosition = true;
+                MarkAppStateDirty();
+            }
+        }
+        return 0;
+
     case WM_LBUTTONDOWN:
     {
         const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -1181,6 +1290,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
 
     case WM_DESTROY:
         KillTimer(window, AppStateTimerId);
+        mainWindow = nullptr;
         PostQuitMessage(0);
         return 0;
     }
@@ -1208,6 +1318,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     L"A new session will be started.",
                     WindowTitle, MB_OK | MB_ICONWARNING);
     }
+    KeepSavedWindowPositionOnScreen();
 
     INITCOMMONCONTROLSEX commonControls{};
     commonControls.dwSize = sizeof(commonControls);
@@ -1238,7 +1349,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
     HWND window = CreateWindowExW(
         0, WindowClassName, WindowTitle, WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, savedWindowWidth, savedWindowHeight,
+        hasSavedWindowPosition ? savedWindowX : CW_USEDEFAULT,
+        hasSavedWindowPosition ? savedWindowY : CW_USEDEFAULT,
+        savedWindowWidth, savedWindowHeight,
         nullptr, nullptr, instance, nullptr);
     if (window == nullptr)
     {
@@ -1246,6 +1359,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     WindowTitle, MB_OK | MB_ICONERROR);
         return 1;
     }
+    mainWindow = window;
 
     ShowWindow(window, showCommand);
     UpdateWindow(window);
