@@ -36,6 +36,7 @@ constexpr UINT CommandExportM3U8 = 1004;
 constexpr UINT CommandGetTrackMetadata = 1005;
 constexpr UINT CommandDeleteTracks = 1006;
 constexpr UINT CommandOpenTracksInExplorer = 1007;
+constexpr UINT CommandShowTrackProperties = 1008;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
 constexpr UINT_PTR AppStateTimerId = 1;
 constexpr UINT AppStateTimerIntervalMs = 60'000;
@@ -365,16 +366,26 @@ std::vector<std::wstring> GetSelectedExistingTrackPaths()
     return paths;
 }
 
-bool OpenFileInExplorer(const std::wstring& path)
+bool CanOperateSelectedTracks(HWND listView)
+{
+    const int selectedCount = ListView_GetSelectedCount(listView);
+    return selectedCount >= 1 && selectedCount <= 10;
+}
+
+bool IsUsableTrackFile(const std::wstring& path)
 {
     if (path.empty())
     {
         return false;
     }
-
     std::error_code error;
-    if (!std::filesystem::is_regular_file(std::filesystem::path(path), error) ||
-        error)
+    return std::filesystem::is_regular_file(std::filesystem::path(path), error) &&
+           !error;
+}
+
+bool OpenFileInExplorer(const std::wstring& path)
+{
+    if (!IsUsableTrackFile(path))
     {
         return false;
     }
@@ -408,8 +419,7 @@ void OpenSelectedTracksInExplorer()
     Playlist* playlist = GetSelectedPlaylist();
     const std::vector<int> selectedIndices =
         GetSelectedTrackIndices(trackListView);
-    if (playlist == nullptr || selectedIndices.empty() ||
-        selectedIndices.size() > 10)
+    if (playlist == nullptr || !CanOperateSelectedTracks(trackListView))
     {
         return;
     }
@@ -419,6 +429,43 @@ void OpenSelectedTracksInExplorer()
         if (index >= 0 && index < static_cast<int>(playlist->tracks.size()))
         {
             OpenFileInExplorer(
+                playlist->tracks[static_cast<std::size_t>(index)].path);
+        }
+    }
+}
+
+bool ShowFileProperties(const std::wstring& path)
+{
+    if (!IsUsableTrackFile(path))
+    {
+        return false;
+    }
+
+    SHELLEXECUTEINFOW shellExecute{};
+    shellExecute.cbSize = sizeof(shellExecute);
+    shellExecute.fMask = SEE_MASK_INVOKEIDLIST | SEE_MASK_FLAG_NO_UI;
+    shellExecute.hwnd = mainWindow;
+    shellExecute.lpVerb = L"properties";
+    shellExecute.lpFile = path.c_str();
+    shellExecute.nShow = SW_SHOW;
+    return ShellExecuteExW(&shellExecute) != FALSE;
+}
+
+void ShowSelectedTrackProperties()
+{
+    Playlist* playlist = GetSelectedPlaylist();
+    const std::vector<int> selectedIndices =
+        GetSelectedTrackIndices(trackListView);
+    if (playlist == nullptr || !CanOperateSelectedTracks(trackListView))
+    {
+        return;
+    }
+
+    for (const int index : selectedIndices)
+    {
+        if (index >= 0 && index < static_cast<int>(playlist->tracks.size()))
+        {
+            ShowFileProperties(
                 playlist->tracks[static_cast<std::size_t>(index)].path);
         }
     }
@@ -949,13 +996,15 @@ void ShowTrackContextMenu(HWND window, LPARAM lParam)
 
     const int selectedCount = ListView_GetSelectedCount(trackListView);
     const UINT selectionState = selectedCount == 0 ? MF_GRAYED : MF_ENABLED;
-    const UINT explorerState = selectedCount >= 1 && selectedCount <= 10
+    const UINT shellOperationState = CanOperateSelectedTracks(trackListView)
         ? MF_ENABLED
         : MF_GRAYED;
     AppendMenuW(menu, MF_STRING | selectionState,
                 CommandGetTrackMetadata, L"Get Metadata");
-    AppendMenuW(menu, MF_STRING | explorerState,
+    AppendMenuW(menu, MF_STRING | shellOperationState,
                 CommandOpenTracksInExplorer, L"Open in Explorer");
+    AppendMenuW(menu, MF_STRING | shellOperationState,
+                CommandShowTrackProperties, L"Properties");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | selectionState,
                 CommandDeleteTracks, L"Delete Track");
@@ -1212,6 +1261,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             return 0;
         case CommandOpenTracksInExplorer:
             OpenSelectedTracksInExplorer();
+            return 0;
+        case CommandShowTrackProperties:
+            ShowSelectedTrackProperties();
             return 0;
         }
         break;
