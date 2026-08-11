@@ -142,6 +142,7 @@ void AppendTrackJson(std::wstring& output, const Track& track, int indent)
     appendStringField(L"title", track.title, true);
     appendStringField(L"artist", track.artist, true);
     appendStringField(L"album", track.album, true);
+    appendStringField(L"comment", track.comment, true);
     appendStringField(L"duration", track.duration, true);
     AppendIndent(output, indent + 1);
     output += L"\"durationSeconds\": " +
@@ -555,6 +556,7 @@ Track ReadTrack(JsonReader& reader)
         if (name == L"title") { track.title = reader.ReadString(); fields |= 1U << 0; }
         else if (name == L"artist") { track.artist = reader.ReadString(); fields |= 1U << 1; }
         else if (name == L"album") { track.album = reader.ReadString(); fields |= 1U << 2; }
+        else if (name == L"comment") { track.comment = reader.ReadString(); }
         else if (name == L"duration") { track.duration = reader.ReadString(); fields |= 1U << 3; }
         else if (name == L"durationSeconds") { track.durationSeconds = ReadInt(reader); fields |= 1U << 4; }
         else if (name == L"path") { track.path = reader.ReadString(); fields |= 1U << 5; }
@@ -602,26 +604,31 @@ void ReadGui(JsonReader& reader, AppState& state)
         else if (name == L"windowY") { state.windowY = ReadInt(reader); fields |= 1U << 4; }
         else if (name == L"trackColumnWidths")
         {
-            std::array<int, TrackColumnCount> widths = DefaultTrackColumnWidths;
-            std::size_t index = 0;
-            bool hasExpectedCount = true;
+            std::vector<int> savedWidths;
             reader.ReadArray([&]() {
-                const int width = ReadInt(reader);
-                if (index < widths.size())
-                {
-                    widths[index] = width >= 24 && width <= 4096
-                        ? width
-                        : DefaultTrackColumnWidths[index];
-                }
-                else
-                {
-                    hasExpectedCount = false;
-                }
-                ++index;
+                savedWidths.push_back(ReadInt(reader));
             });
-            if (hasExpectedCount && index == widths.size())
+            const auto validWidth = [](int width, std::size_t column) {
+                return width >= 24 && width <= 4096
+                    ? width
+                    : DefaultTrackColumnWidths[column];
+            };
+            if (savedWidths.size() == TrackColumnCount)
             {
-                state.trackColumnWidths = widths;
+                for (std::size_t index = 0; index < TrackColumnCount; ++index)
+                {
+                    state.trackColumnWidths[index] =
+                        validWidth(savedWidths[index], index);
+                }
+            }
+            else if (savedWidths.size() == 5)
+            {
+                state.trackColumnWidths[0] = validWidth(savedWidths[0], 0);
+                state.trackColumnWidths[1] = validWidth(savedWidths[1], 1);
+                state.trackColumnWidths[2] = validWidth(savedWidths[2], 2);
+                state.trackColumnWidths[3] = DefaultTrackColumnWidths[3];
+                state.trackColumnWidths[4] = validWidth(savedWidths[3], 4);
+                state.trackColumnWidths[5] = validWidth(savedWidths[4], 5);
             }
             else
             {

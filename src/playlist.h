@@ -55,6 +55,7 @@ struct Track
     std::wstring title;
     std::wstring artist;
     std::wstring album;
+    std::wstring comment;
     std::wstring duration;
     int durationSeconds = -1;
     std::wstring path;

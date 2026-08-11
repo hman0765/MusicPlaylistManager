@@ -6,9 +6,9 @@
 
 #include "playlist.h"
 
-inline constexpr std::size_t TrackColumnCount = 5;
+inline constexpr std::size_t TrackColumnCount = 6;
 inline constexpr std::array<int, TrackColumnCount> DefaultTrackColumnWidths = {
-    180, 140, 160, 85, 240
+    180, 140, 160, 180, 85, 240
 };
 
 struct AppState

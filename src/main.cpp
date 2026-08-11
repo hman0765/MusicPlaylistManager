@@ -306,8 +306,9 @@ void RefreshTrackList(HWND listView, const Playlist& playlist)
         InsertListItem(listView, row, displayTitle);
         SetListItemText(listView, row, 1, track.artist);
         SetListItemText(listView, row, 2, track.album);
-        SetListItemText(listView, row, 3, displayDuration);
-        SetListItemText(listView, row, 4, track.path);
+        SetListItemText(listView, row, 3, track.comment);
+        SetListItemText(listView, row, 4, displayDuration);
+        SetListItemText(listView, row, 5, track.path);
     }
 }
 
@@ -1230,8 +1231,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         InsertColumn(trackListView, 0, L"Title", trackColumnWidths[0]);
         InsertColumn(trackListView, 1, L"Artist", trackColumnWidths[1]);
         InsertColumn(trackListView, 2, L"Album", trackColumnWidths[2]);
-        InsertColumn(trackListView, 3, L"Duration", trackColumnWidths[3]);
-        InsertColumn(trackListView, 4, L"Path", trackColumnWidths[4]);
+        InsertColumn(trackListView, 3, L"Comment", trackColumnWidths[3]);
+        InsertColumn(trackListView, 4, L"Duration", trackColumnWidths[4]);
+        InsertColumn(trackListView, 5, L"Path", trackColumnWidths[5]);
         RefreshPlaylistList(playlistListView, playlists);
         RefreshSelectedTrackList();
         DragAcceptFiles(window, TRUE);

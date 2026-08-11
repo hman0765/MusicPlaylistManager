@@ -276,6 +276,8 @@ bool UpdateTrackMetadata(Track& track)
         ReadStringProperty(propertyStore, PKEY_Music_Artist);
     const std::wstring album =
         ReadStringProperty(propertyStore, PKEY_Music_AlbumTitle);
+    const std::wstring comment =
+        ReadStringProperty(propertyStore, PKEY_Comment);
     int durationSeconds = -1;
     const std::wstring duration =
         ReadDurationProperty(propertyStore, durationSeconds);
@@ -293,6 +295,7 @@ bool UpdateTrackMetadata(Track& track)
     updateString(track.title, title);
     updateString(track.artist, artist);
     updateString(track.album, album);
+    updateString(track.comment, comment);
     if (!duration.empty())
     {
         track.duration = duration;
@@ -363,25 +366,44 @@ Playlist LoadM3U8(const std::wstring& filePath)
     return playlist;
 }
 
+std::wstring BuildGeneratedExtinfText(const Track& track)
+{
+    std::wstring result;
+    if (!track.artist.empty())
+    {
+        result += track.artist;
+        result += L" - ";
+    }
+
+    if (!track.title.empty())
+    {
+        result += track.title;
+    }
+    else if (!track.path.empty())
+    {
+        result += std::filesystem::path(track.path).stem().wstring();
+    }
+
+    if (!track.comment.empty())
+    {
+        result += L" - ";
+        result += track.comment;
+    }
+    else if (!track.album.empty())
+    {
+        result += L" - ";
+        result += track.album;
+    }
+    return result;
+}
+
 std::wstring BuildExtinfText(const Track& track)
 {
     if (!track.extinfText.empty())
     {
         return track.extinfText;
     }
-    if (!track.artist.empty() && !track.title.empty())
-    {
-        return track.artist + L" - " + track.title;
-    }
-    if (!track.title.empty())
-    {
-        return track.title;
-    }
-    if (track.path.empty())
-    {
-        return L"";
-    }
-    return std::filesystem::path(track.path).stem().wstring();
+    return BuildGeneratedExtinfText(track);
 }
 
 int GetExportDuration(const Track& track)
