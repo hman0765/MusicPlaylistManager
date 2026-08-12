@@ -11,8 +11,10 @@
 #include <cwctype>
 #include <exception>
 #include <filesystem>
+#include <iomanip>
 #include <iterator>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -44,6 +46,9 @@ constexpr UINT AppStateTimerIntervalMs = 60'000;
 HWND mainWindow = nullptr;
 HWND playlistListView = nullptr;
 HWND trackListView = nullptr;
+HWND statusText = nullptr;
+HFONT statusFont = nullptr;
+int statusHeight = 32;
 int splitterX = 240;
 int savedWindowX = 0;
 int savedWindowY = 0;
@@ -60,6 +65,7 @@ bool oleDragDropAvailable = false;
 std::vector<Playlist> playlists{{L"New Playlist", L"", {}, false}};
 int selectedPlaylistIndex = 0;
 bool isRefreshingPlaylistList = false;
+bool isRefreshingTrackList = false;
 bool appStateDirty = false;
 bool appStateTrackingEnabled = false;
 
@@ -290,8 +296,11 @@ void SetListItemText(HWND listView, int row, int column,
                          const_cast<wchar_t*>(text.c_str()));
 }
 
+void RefreshStatusBar();
+
 void RefreshTrackList(HWND listView, const Playlist& playlist)
 {
+    isRefreshingTrackList = true;
     ListView_DeleteAllItems(listView);
     for (std::size_t index = 0; index < playlist.tracks.size(); ++index)
     {
@@ -310,6 +319,7 @@ void RefreshTrackList(HWND listView, const Playlist& playlist)
         SetListItemText(listView, row, 4, displayDuration);
         SetListItemText(listView, row, 5, track.path);
     }
+    isRefreshingTrackList = false;
 }
 
 void RefreshSelectedTrackList()
@@ -322,6 +332,7 @@ void RefreshSelectedTrackList()
     {
         ListView_DeleteAllItems(trackListView);
     }
+    RefreshStatusBar();
 }
 
 std::vector<int> GetSelectedTrackIndices(HWND listView)
@@ -333,6 +344,110 @@ std::vector<int> GetSelectedTrackIndices(HWND listView)
         indices.push_back(index);
     }
     return indices;
+}
+
+int GetEffectiveDurationSeconds(const Track& track)
+{
+    if (track.durationSeconds >= 0)
+    {
+        return track.durationSeconds;
+    }
+    if (track.extinfDuration >= 0)
+    {
+        return track.extinfDuration;
+    }
+    return -1;
+}
+
+std::wstring FormatTotalDuration(long long totalSeconds)
+{
+    const long long hours = totalSeconds / 3600;
+    const long long minutes = (totalSeconds / 60) % 60;
+    const long long seconds = totalSeconds % 60;
+    std::wostringstream stream;
+    stream << std::setfill(L'0') << std::setw(2) << hours << L':'
+           << std::setw(2) << minutes << L':'
+           << std::setw(2) << seconds;
+    return stream.str();
+}
+
+struct DurationSummary
+{
+    std::size_t trackCount = 0;
+    long long totalSeconds = 0;
+    bool hasUnknownDuration = false;
+};
+
+DurationSummary SummarizeTracks(const Playlist& playlist,
+                                const std::vector<int>* selectedIndices)
+{
+    DurationSummary summary{};
+    const auto addTrack = [&summary](const Track& track) {
+        ++summary.trackCount;
+        const int duration = GetEffectiveDurationSeconds(track);
+        if (duration >= 0)
+        {
+            summary.totalSeconds += duration;
+        }
+        else
+        {
+            summary.hasUnknownDuration = true;
+        }
+    };
+
+    if (selectedIndices == nullptr)
+    {
+        for (const Track& track : playlist.tracks)
+        {
+            addTrack(track);
+        }
+    }
+    else
+    {
+        for (const int index : *selectedIndices)
+        {
+            if (index >= 0 && index < static_cast<int>(playlist.tracks.size()))
+            {
+                addTrack(playlist.tracks[static_cast<std::size_t>(index)]);
+            }
+        }
+    }
+    return summary;
+}
+
+std::wstring FormatDurationSummary(const DurationSummary& summary)
+{
+    std::wstring text = std::to_wstring(summary.trackCount) +
+                        L" tracks / " +
+                        FormatTotalDuration(summary.totalSeconds);
+    if (summary.hasUnknownDuration)
+    {
+        text += L'+';
+    }
+    return text;
+}
+
+void RefreshStatusBar()
+{
+    if (statusText == nullptr)
+    {
+        return;
+    }
+
+    DurationSummary selectedSummary{};
+    DurationSummary playlistSummary{};
+    if (const Playlist* playlist = GetSelectedPlaylist())
+    {
+        const std::vector<int> selectedIndices =
+            GetSelectedTrackIndices(trackListView);
+        selectedSummary = SummarizeTracks(*playlist, &selectedIndices);
+        playlistSummary = SummarizeTracks(*playlist, nullptr);
+    }
+
+    const std::wstring text =
+        L"Selected: " + FormatDurationSummary(selectedSummary) +
+        L" | Playlist: " + FormatDurationSummary(playlistSummary) + L"  ";
+    SetWindowTextW(statusText, text.c_str());
 }
 
 std::vector<std::wstring> GetSelectedExistingTrackPaths()
@@ -1027,6 +1142,7 @@ void LayoutChildren(HWND window)
     GetClientRect(window, &client);
     const int width = client.right - client.left;
     const int height = client.bottom - client.top;
+    const int paneHeight = std::max(0, height - statusHeight);
 
     if (width >= MinimumPaneWidth * 2 + SplitterWidth)
     {
@@ -1041,11 +1157,45 @@ void LayoutChildren(HWND window)
     const int rightX = std::min(width, splitterX + SplitterWidth);
     const int rightWidth = std::max(0, width - rightX);
 
-    MoveWindow(playlistListView, 0, 0, splitterX, height, TRUE);
-    MoveWindow(trackListView, rightX, 0, rightWidth, height, TRUE);
+    MoveWindow(playlistListView, 0, 0, splitterX, paneHeight, TRUE);
+    MoveWindow(trackListView, rightX, 0, rightWidth, paneHeight, TRUE);
+    MoveWindow(statusText, 0, paneHeight, width, statusHeight, TRUE);
 
     ListView_SetColumnWidth(playlistListView, 0, std::max(0, splitterX - 4));
     InvalidateRect(window, nullptr, FALSE);
+}
+
+void InitializeStatusFont()
+{
+    LOGFONTW statusLogFont{};
+    const HFONT defaultFont = static_cast<HFONT>(
+        GetStockObject(DEFAULT_GUI_FONT));
+    HDC statusDeviceContext = GetDC(statusText);
+    const int dpi = statusDeviceContext == nullptr
+        ? 96
+        : GetDeviceCaps(statusDeviceContext, LOGPIXELSY);
+    if (defaultFont != nullptr &&
+        GetObjectW(defaultFont, sizeof(statusLogFont), &statusLogFont) != 0)
+    {
+        statusLogFont.lfHeight = -MulDiv(11, dpi <= 0 ? 96 : dpi, 72);
+        statusFont = CreateFontIndirectW(&statusLogFont);
+    }
+
+    const HFONT displayFont = statusFont != nullptr ? statusFont : defaultFont;
+    SendMessageW(statusText, WM_SETFONT,
+                 reinterpret_cast<WPARAM>(displayFont), TRUE);
+    if (statusDeviceContext != nullptr)
+    {
+        const HGDIOBJ previousFont = SelectObject(statusDeviceContext,
+                                                   displayFont);
+        TEXTMETRICW metrics{};
+        if (GetTextMetricsW(statusDeviceContext, &metrics))
+        {
+            statusHeight = metrics.tmHeight + 10;
+        }
+        SelectObject(statusDeviceContext, previousFont);
+        ReleaseDC(statusText, statusDeviceContext);
+    }
 }
 
 bool IsPointOnSplitter(HWND window, POINT point)
@@ -1053,7 +1203,7 @@ bool IsPointOnSplitter(HWND window, POINT point)
     RECT client{};
     GetClientRect(window, &client);
     return point.x >= splitterX && point.x < splitterX + SplitterWidth &&
-           point.y >= 0 && point.y < client.bottom;
+           point.y >= 0 && point.y < client.bottom - statusHeight;
 }
 
 bool IsPointInTrackPane(HWND window, POINT point)
@@ -1217,11 +1367,19 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS,
             0, 0, 0, 0, window, nullptr,
             reinterpret_cast<LPCREATESTRUCTW>(lParam)->hInstance, nullptr);
+        statusText = CreateWindowExW(
+            WS_EX_STATICEDGE, WC_STATICW, L"",
+            WS_CHILD | WS_VISIBLE | SS_RIGHT | SS_CENTERIMAGE,
+            0, 0, 0, 0, window, nullptr,
+            reinterpret_cast<LPCREATESTRUCTW>(lParam)->hInstance, nullptr);
 
-        if (playlistListView == nullptr || trackListView == nullptr)
+        if (playlistListView == nullptr || trackListView == nullptr ||
+            statusText == nullptr)
         {
             return -1;
         }
+
+        InitializeStatusFont();
 
         ListView_SetExtendedListViewStyle(
             playlistListView, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
@@ -1281,6 +1439,17 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
              header->code == HDN_ENDTRACKA))
         {
             MarkAppStateDirty();
+            return 0;
+        }
+        if (header->hwndFrom == trackListView &&
+            header->code == LVN_ITEMCHANGED && !isRefreshingTrackList)
+        {
+            const NMLISTVIEW* change = reinterpret_cast<NMLISTVIEW*>(lParam);
+            if ((change->uChanged & LVIF_STATE) != 0 &&
+                ((change->uOldState ^ change->uNewState) & LVIS_SELECTED) != 0)
+            {
+                RefreshStatusBar();
+            }
             return 0;
         }
         if (header->code == LVN_BEGINDRAG)
@@ -1512,7 +1681,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         HDC deviceContext = BeginPaint(window, &paint);
         RECT client{};
         GetClientRect(window, &client);
-        RECT splitterRect{splitterX, 0, splitterX + SplitterWidth, client.bottom};
+        RECT splitterRect{splitterX, 0, splitterX + SplitterWidth,
+                          std::max(0, static_cast<int>(client.bottom) -
+                                          statusHeight)};
         FillRect(deviceContext, &splitterRect,
                  GetSysColorBrush(COLOR_3DFACE));
         EndPaint(window, &paint);
@@ -1527,6 +1698,11 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
 
     case WM_DESTROY:
         KillTimer(window, AppStateTimerId);
+        if (statusFont != nullptr)
+        {
+            DeleteObject(statusFont);
+            statusFont = nullptr;
+        }
         mainWindow = nullptr;
         PostQuitMessage(0);
         return 0;
