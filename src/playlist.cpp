@@ -1,10 +1,10 @@
 #include "playlist.h"
 
 #include <windows.h>
-#include <shobjidl.h>
-#include <propsys.h>
-#include <propkey.h>
-#include <propvarutil.h>
+
+#include <audioproperties.h>
+#include <fileref.h>
+#include <tag.h>
 
 #include <algorithm>
 #include <array>
@@ -36,68 +36,32 @@ std::wstring LowercaseExtension(const std::wstring& path)
     return extension;
 }
 
-std::wstring ReadStringProperty(IPropertyStore* propertyStore,
-                                REFPROPERTYKEY propertyKey)
+std::wstring TagLibStringToWString(const TagLib::String& value)
 {
-    PROPVARIANT value{};
-    PropVariantInit(&value);
-
-    std::wstring result;
-    if (SUCCEEDED(propertyStore->GetValue(propertyKey, &value)))
-    {
-        wchar_t text[1024]{};
-        if (SUCCEEDED(PropVariantToString(value, text,
-                                          static_cast<UINT>(std::size(text)))))
-        {
-            result = text;
-        }
-    }
-
-    PropVariantClear(&value);
-    return result;
-}
-
-std::wstring ReadDurationProperty(IPropertyStore* propertyStore,
-                                  int& durationSeconds)
-{
-    PROPVARIANT value{};
-    PropVariantInit(&value);
-
-    ULONGLONG durationInHundredNanoseconds = 0;
-    const bool hasDuration =
-        SUCCEEDED(propertyStore->GetValue(PKEY_Media_Duration, &value)) &&
-        SUCCEEDED(PropVariantToUInt64(value, &durationInHundredNanoseconds)) &&
-        durationInHundredNanoseconds > 0;
-    PropVariantClear(&value);
-
-    if (!hasDuration)
+    const std::string utf8 = value.to8Bit(true);
+    if (utf8.empty())
     {
         return L"";
     }
-
-    constexpr ULONGLONG HundredNanosecondsPerSecond = 10'000'000;
-    const ULONGLONG totalSeconds =
-        durationInHundredNanoseconds / HundredNanosecondsPerSecond;
-    if (totalSeconds <= static_cast<ULONGLONG>(std::numeric_limits<int>::max()))
+    if (utf8.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
     {
-        durationSeconds = static_cast<int>(totalSeconds);
+        return L"";
     }
-    const ULONGLONG hours = totalSeconds / 3600;
-    const ULONGLONG minutes = (totalSeconds / 60) % 60;
-    const ULONGLONG seconds = totalSeconds % 60;
-
-    std::wostringstream stream;
-    stream << std::setfill(L'0');
-    if (hours > 0)
+    const int utf8Length = static_cast<int>(utf8.size());
+    const int wideLength = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), utf8Length, nullptr, 0);
+    if (wideLength <= 0)
     {
-        stream << hours << L':' << std::setw(2) << minutes;
+        return L"";
     }
-    else
+    std::wstring result(static_cast<std::size_t>(wideLength), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                            utf8.data(), utf8Length,
+                            result.data(), wideLength) != wideLength)
     {
-        stream << std::setw(2) << minutes;
+        return L"";
     }
-    stream << L':' << std::setw(2) << seconds;
-    return stream.str();
+    return result;
 }
 
 std::wstring DecodeUtf8(std::string bytes)
@@ -261,48 +225,42 @@ bool UpdateTrackMetadata(Track& track)
         return false;
     }
 
-    IPropertyStore* propertyStore = nullptr;
-    const HRESULT result = SHGetPropertyStoreFromParsingName(
-        track.path.c_str(), nullptr, GPS_BESTEFFORT,
-        IID_PPV_ARGS(&propertyStore));
-    if (FAILED(result))
+    TagLib::FileRef file{TagLib::FileName(track.path.c_str())};
+    if (file.isNull())
     {
         return false;
     }
 
-    const std::wstring title =
-        ReadStringProperty(propertyStore, PKEY_Title);
-    const std::wstring artist =
-        ReadStringProperty(propertyStore, PKEY_Music_Artist);
-    const std::wstring album =
-        ReadStringProperty(propertyStore, PKEY_Music_AlbumTitle);
-    const std::wstring comment =
-        ReadStringProperty(propertyStore, PKEY_Comment);
-    int durationSeconds = -1;
-    const std::wstring duration =
-        ReadDurationProperty(propertyStore, durationSeconds);
-    propertyStore->Release();
-
-    bool loadedAnyMetadata = false;
-    const auto updateString = [&loadedAnyMetadata](std::wstring& destination,
-                                                    const std::wstring& value) {
-        if (!value.empty())
+    bool changedMetadata = false;
+    const auto updateString = [&changedMetadata](std::wstring& destination,
+                                                  const std::wstring& value) {
+        if (!value.empty() && destination != value)
         {
             destination = value;
-            loadedAnyMetadata = true;
+            changedMetadata = true;
         }
     };
-    updateString(track.title, title);
-    updateString(track.artist, artist);
-    updateString(track.album, album);
-    updateString(track.comment, comment);
-    if (!duration.empty())
+
+    if (const TagLib::Tag* tag = file.tag())
     {
-        track.duration = duration;
-        track.durationSeconds = durationSeconds;
-        loadedAnyMetadata = true;
+        updateString(track.title, TagLibStringToWString(tag->title()));
+        updateString(track.artist, TagLibStringToWString(tag->artist()));
+        updateString(track.album, TagLibStringToWString(tag->album()));
+        updateString(track.comment, TagLibStringToWString(tag->comment()));
     }
-    return loadedAnyMetadata;
+    if (const TagLib::AudioProperties* properties = file.audioProperties())
+    {
+        const int durationSeconds = properties->lengthInSeconds();
+        const std::wstring duration = FormatDuration(durationSeconds);
+        if (track.durationSeconds != durationSeconds ||
+            track.duration != duration)
+        {
+            track.durationSeconds = durationSeconds;
+            track.duration = duration;
+            changedMetadata = true;
+        }
+    }
+    return changedMetadata;
 }
 
 Playlist LoadM3U8(const std::wstring& filePath)
