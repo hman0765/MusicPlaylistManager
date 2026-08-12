@@ -474,6 +474,19 @@ void UpdateListTooltip(ListTooltipState& state, POINT mousePosition)
         ResetListTooltip(state);
         return;
     }
+    // For subitem 0, LVIR_BOUNDS can cover the complete row, including all
+    // following subitems. Limit the rectangle to the actual Title column.
+    if (state.listView == trackListView && column == 0)
+    {
+        const int titleColumnWidth =
+            ListView_GetColumnWidth(state.listView, 0);
+        if (titleColumnWidth <= 0)
+        {
+            ResetListTooltip(state);
+            return;
+        }
+        cellRect.right = cellRect.left + titleColumnWidth;
+    }
     const std::wstring text = GetTooltipCellText(
         state.listView, row, column);
     if (!IsCellTextTruncated(state.listView, cellRect, text))
