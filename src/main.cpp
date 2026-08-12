@@ -47,6 +47,8 @@ HWND mainWindow = nullptr;
 HWND playlistListView = nullptr;
 HWND trackListView = nullptr;
 HWND statusText = nullptr;
+HWND playlistTooltip = nullptr;
+HWND trackTooltip = nullptr;
 HFONT statusFont = nullptr;
 int statusHeight = 32;
 int splitterX = 240;
@@ -68,6 +70,22 @@ bool isRefreshingPlaylistList = false;
 bool isRefreshingTrackList = false;
 bool appStateDirty = false;
 bool appStateTrackingEnabled = false;
+
+struct ListTooltipState
+{
+    HWND listView = nullptr;
+    HWND tooltip = nullptr;
+    int row = -1;
+    int column = -1;
+    std::wstring text;
+};
+
+ListTooltipState playlistTooltipState{};
+ListTooltipState trackTooltipState{};
+constexpr UINT_PTR PlaylistTooltipSubclassId = 1;
+constexpr UINT_PTR TrackTooltipSubclassId = 2;
+
+void ResetListTooltip(ListTooltipState& state);
 
 void MarkAppStateDirty()
 {
@@ -266,6 +284,7 @@ Playlist* GetSelectedPlaylist()
 void RefreshPlaylistList(HWND listView,
                          const std::vector<Playlist>& playlistData)
 {
+    ResetListTooltip(playlistTooltipState);
     isRefreshingPlaylistList = true;
     ListView_DeleteAllItems(listView);
     for (std::size_t index = 0; index < playlistData.size(); ++index)
@@ -298,26 +317,45 @@ void SetListItemText(HWND listView, int row, int column,
 
 void RefreshStatusBar();
 
+std::wstring GetTrackDisplayText(const Track& track, int column)
+{
+    switch (column)
+    {
+    case 0:
+        return track.title.empty() ? track.extinfText : track.title;
+    case 1:
+        return track.artist;
+    case 2:
+        return track.album;
+    case 3:
+        return track.comment;
+    case 4:
+        return track.duration.empty()
+            ? FormatDuration(track.extinfDuration)
+            : track.duration;
+    case 5:
+        return track.path;
+    default:
+        return L"";
+    }
+}
+
 void RefreshTrackList(HWND listView, const Playlist& playlist)
 {
+    ResetListTooltip(trackTooltipState);
     isRefreshingTrackList = true;
     ListView_DeleteAllItems(listView);
     for (std::size_t index = 0; index < playlist.tracks.size(); ++index)
     {
         const int row = static_cast<int>(index);
         const Track& track = playlist.tracks[index];
-        const std::wstring displayTitle = track.title.empty()
-            ? track.extinfText
-            : track.title;
-        const std::wstring displayDuration = track.duration.empty()
-            ? FormatDuration(track.extinfDuration)
-            : track.duration;
-        InsertListItem(listView, row, displayTitle);
-        SetListItemText(listView, row, 1, track.artist);
-        SetListItemText(listView, row, 2, track.album);
-        SetListItemText(listView, row, 3, track.comment);
-        SetListItemText(listView, row, 4, displayDuration);
-        SetListItemText(listView, row, 5, track.path);
+        InsertListItem(listView, row, GetTrackDisplayText(track, 0));
+        for (int column = 1; column < static_cast<int>(TrackColumnCount);
+             ++column)
+        {
+            SetListItemText(listView, row, column,
+                            GetTrackDisplayText(track, column));
+        }
     }
     isRefreshingTrackList = false;
 }
@@ -330,6 +368,7 @@ void RefreshSelectedTrackList()
     }
     else
     {
+        ResetListTooltip(trackTooltipState);
         ListView_DeleteAllItems(trackListView);
     }
     RefreshStatusBar();
@@ -344,6 +383,201 @@ std::vector<int> GetSelectedTrackIndices(HWND listView)
         indices.push_back(index);
     }
     return indices;
+}
+
+std::wstring GetTooltipCellText(HWND listView, int row, int column)
+{
+    if (listView == playlistListView)
+    {
+        return column == 0 && row >= 0 &&
+                       row < static_cast<int>(playlists.size())
+            ? playlists[static_cast<std::size_t>(row)].name
+            : L"";
+    }
+
+    const Playlist* playlist = GetSelectedPlaylist();
+    if (listView != trackListView || playlist == nullptr || column == 4 ||
+        row < 0 || row >= static_cast<int>(playlist->tracks.size()))
+    {
+        return L"";
+    }
+    return GetTrackDisplayText(
+        playlist->tracks[static_cast<std::size_t>(row)], column);
+}
+
+bool IsCellTextTruncated(HWND listView, const RECT& cellRect,
+                         const std::wstring& text)
+{
+    if (text.empty())
+    {
+        return false;
+    }
+
+    HDC deviceContext = GetDC(listView);
+    if (deviceContext == nullptr)
+    {
+        return false;
+    }
+    HFONT font = reinterpret_cast<HFONT>(
+        SendMessageW(listView, WM_GETFONT, 0, 0));
+    if (font == nullptr)
+    {
+        font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    }
+    const HGDIOBJ previousFont = SelectObject(deviceContext, font);
+    SIZE textSize{};
+    const bool measured = GetTextExtentPoint32W(
+        deviceContext, text.c_str(), static_cast<int>(text.size()),
+        &textSize) != FALSE;
+    SelectObject(deviceContext, previousFont);
+    ReleaseDC(listView, deviceContext);
+
+    constexpr int HorizontalCellPadding = 12;
+    const int availableWidth =
+        std::max(0, static_cast<int>(cellRect.right - cellRect.left) -
+                        HorizontalCellPadding);
+    return measured && textSize.cx > availableWidth;
+}
+
+void ResetListTooltip(ListTooltipState& state)
+{
+    if (state.tooltip != nullptr)
+    {
+        TOOLINFOW toolInfo{};
+        toolInfo.cbSize = TTTOOLINFOW_V2_SIZE;
+        toolInfo.hwnd = GetParent(state.listView);
+        toolInfo.uId = reinterpret_cast<UINT_PTR>(state.listView);
+        SendMessageW(state.tooltip, TTM_TRACKACTIVATE, FALSE,
+                     reinterpret_cast<LPARAM>(&toolInfo));
+    }
+    state.row = -1;
+    state.column = -1;
+    state.text.clear();
+}
+
+void UpdateListTooltip(ListTooltipState& state, POINT mousePosition)
+{
+    LVHITTESTINFO hitTest{};
+    hitTest.pt = mousePosition;
+    const int row = ListView_SubItemHitTest(state.listView, &hitTest);
+    const int column = hitTest.iSubItem;
+    if (row < 0 || column < 0)
+    {
+        ResetListTooltip(state);
+        return;
+    }
+
+    RECT cellRect{};
+    if (!ListView_GetSubItemRect(state.listView, row, column,
+                                 LVIR_BOUNDS, &cellRect))
+    {
+        ResetListTooltip(state);
+        return;
+    }
+    const std::wstring text = GetTooltipCellText(
+        state.listView, row, column);
+    if (!IsCellTextTruncated(state.listView, cellRect, text))
+    {
+        ResetListTooltip(state);
+        return;
+    }
+    if (state.row == row && state.column == column && state.text == text)
+    {
+        return;
+    }
+
+    ResetListTooltip(state);
+    state.row = row;
+    state.column = column;
+    state.text = text;
+    POINT tooltipPosition = mousePosition;
+    ClientToScreen(state.listView, &tooltipPosition);
+    SendMessageW(state.tooltip, TTM_TRACKPOSITION, 0,
+                 MAKELPARAM(tooltipPosition.x + 16,
+                            tooltipPosition.y + 20));
+    TOOLINFOW toolInfo{};
+    toolInfo.cbSize = TTTOOLINFOW_V2_SIZE;
+    toolInfo.hwnd = GetParent(state.listView);
+    toolInfo.uId = reinterpret_cast<UINT_PTR>(state.listView);
+    toolInfo.lpszText = state.text.data();
+    SendMessageW(state.tooltip, TTM_UPDATETIPTEXTW, 0,
+                 reinterpret_cast<LPARAM>(&toolInfo));
+    SendMessageW(state.tooltip, TTM_TRACKACTIVATE, TRUE,
+                 reinterpret_cast<LPARAM>(&toolInfo));
+}
+
+LRESULT CALLBACK ListTooltipSubclassProcedure(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam,
+    UINT_PTR subclassId, DWORD_PTR referenceData)
+{
+    auto& state = *reinterpret_cast<ListTooltipState*>(referenceData);
+    switch (message)
+    {
+    case WM_MOUSEMOVE:
+    {
+        TRACKMOUSEEVENT tracking{};
+        tracking.cbSize = sizeof(tracking);
+        tracking.dwFlags = TME_LEAVE;
+        tracking.hwndTrack = window;
+        TrackMouseEvent(&tracking);
+        UpdateListTooltip(
+            state, {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)});
+        break;
+    }
+    case WM_MOUSELEAVE:
+    case WM_LBUTTONDOWN:
+    case WM_RBUTTONDOWN:
+    case WM_MBUTTONDOWN:
+        ResetListTooltip(state);
+        break;
+    case WM_NCDESTROY:
+        RemoveWindowSubclass(window, ListTooltipSubclassProcedure,
+                             subclassId);
+        break;
+    }
+    return DefSubclassProc(window, message, wParam, lParam);
+}
+
+bool InitializeListTooltip(HWND window, HWND listView,
+                           ListTooltipState& state,
+                           UINT_PTR subclassId)
+{
+    HWND tooltip = CreateWindowExW(
+        WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+        WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        window, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (tooltip == nullptr)
+    {
+        return false;
+    }
+    SendMessageW(tooltip, CCM_SETUNICODEFORMAT, TRUE, 0);
+
+    state.listView = listView;
+    state.tooltip = tooltip;
+    TOOLINFOW toolInfo{};
+    // The application currently runs without a Common Controls v6 manifest.
+    // Use the v2 structure size accepted by the system tooltip control.
+    toolInfo.cbSize = TTTOOLINFOW_V2_SIZE;
+    toolInfo.hwnd = window;
+    toolInfo.uId = reinterpret_cast<UINT_PTR>(listView);
+    toolInfo.uFlags = TTF_IDISHWND | TTF_TRACK | TTF_ABSOLUTE |
+                      TTF_TRANSPARENT;
+    toolInfo.lpszText = const_cast<wchar_t*>(L"");
+    const bool toolAdded = SendMessageW(
+        tooltip, TTM_ADDTOOLW, 0,
+        reinterpret_cast<LPARAM>(&toolInfo)) != FALSE;
+    const bool subclassInstalled = toolAdded && SetWindowSubclass(
+        listView, ListTooltipSubclassProcedure, subclassId,
+        reinterpret_cast<DWORD_PTR>(&state)) != FALSE;
+    if (!subclassInstalled)
+    {
+        DestroyWindow(tooltip);
+        state = {};
+        return false;
+    }
+    SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, 0, 900);
+    return true;
 }
 
 int GetEffectiveDurationSeconds(const Track& track)
@@ -1378,6 +1612,17 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         {
             return -1;
         }
+        if (!InitializeListTooltip(window, playlistListView,
+                                   playlistTooltipState,
+                                   PlaylistTooltipSubclassId) ||
+            !InitializeListTooltip(window, trackListView,
+                                   trackTooltipState,
+                                   TrackTooltipSubclassId))
+        {
+            return -1;
+        }
+        playlistTooltip = playlistTooltipState.tooltip;
+        trackTooltip = trackTooltipState.tooltip;
 
         InitializeStatusFont();
 
@@ -1539,6 +1784,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         return 0;
 
     case WM_CONTEXTMENU:
+        ResetListTooltip(playlistTooltipState);
+        ResetListTooltip(trackTooltipState);
         if (reinterpret_cast<HWND>(wParam) == playlistListView)
         {
             ShowPlaylistContextMenu(window, lParam);
@@ -1698,6 +1945,16 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
 
     case WM_DESTROY:
         KillTimer(window, AppStateTimerId);
+        if (playlistTooltip != nullptr)
+        {
+            DestroyWindow(playlistTooltip);
+            playlistTooltip = nullptr;
+        }
+        if (trackTooltip != nullptr)
+        {
+            DestroyWindow(trackTooltip);
+            trackTooltip = nullptr;
+        }
         if (statusFont != nullptr)
         {
             DeleteObject(statusFont);
@@ -1735,7 +1992,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
     INITCOMMONCONTROLSEX commonControls{};
     commonControls.dwSize = sizeof(commonControls);
-    commonControls.dwICC = ICC_LISTVIEW_CLASSES;
+    commonControls.dwICC = ICC_LISTVIEW_CLASSES | ICC_WIN95_CLASSES;
     if (!InitCommonControlsEx(&commonControls))
     {
         MessageBoxW(nullptr, L"Common Controls の初期化に失敗しました。",
