@@ -39,6 +39,9 @@ constexpr UINT CommandGetTrackMetadata = 1005;
 constexpr UINT CommandDeleteTracks = 1006;
 constexpr UINT CommandOpenTracksInExplorer = 1007;
 constexpr UINT CommandShowTrackProperties = 1008;
+constexpr UINT CommandOpenAudioFiles = 1009;
+constexpr UINT CommandImportPlaylist = 1010;
+constexpr UINT CommandExit = 1011;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
 constexpr UINT_PTR AppStateTimerId = 1;
 constexpr UINT AppStateTimerIntervalMs = 60'000;
@@ -49,6 +52,9 @@ HWND trackListView = nullptr;
 HWND statusText = nullptr;
 HWND playlistTooltip = nullptr;
 HWND trackTooltip = nullptr;
+HMENU fileMenu = nullptr;
+HMENU playlistMenu = nullptr;
+HMENU trackMenu = nullptr;
 HFONT statusFont = nullptr;
 int statusHeight = 32;
 int splitterX = 240;
@@ -733,6 +739,107 @@ bool CanOperateSelectedTracks(HWND listView)
 {
     const int selectedCount = ListView_GetSelectedCount(listView);
     return selectedCount >= 1 && selectedCount <= 10;
+}
+
+bool HasSelectedPlaylist()
+{
+    return GetSelectedPlaylist() != nullptr;
+}
+
+bool HasSelectedTracks()
+{
+    return trackListView != nullptr &&
+           ListView_GetSelectedCount(trackListView) > 0;
+}
+
+void SetMenuCommandEnabled(HMENU menu, UINT command, bool enabled)
+{
+    if (menu != nullptr)
+    {
+        EnableMenuItem(menu, command, MF_BYCOMMAND |
+                       (enabled ? MF_ENABLED : MF_GRAYED));
+    }
+}
+
+void UpdateMainMenuState()
+{
+    const bool hasPlaylist = HasSelectedPlaylist();
+    const bool hasTracks = HasSelectedTracks();
+    const bool canUseShellOperations = trackListView != nullptr &&
+        CanOperateSelectedTracks(trackListView);
+
+    SetMenuCommandEnabled(fileMenu, CommandExportM3U8, hasPlaylist);
+    SetMenuCommandEnabled(playlistMenu, CommandRenamePlaylist, hasPlaylist);
+    SetMenuCommandEnabled(playlistMenu, CommandDeletePlaylist, hasPlaylist);
+    SetMenuCommandEnabled(trackMenu, CommandGetTrackMetadata, hasTracks);
+    SetMenuCommandEnabled(trackMenu, CommandOpenTracksInExplorer,
+                          canUseShellOperations);
+    SetMenuCommandEnabled(trackMenu, CommandShowTrackProperties,
+                          canUseShellOperations);
+    SetMenuCommandEnabled(trackMenu, CommandDeleteTracks, hasTracks);
+}
+
+bool CreateMainMenuBar(HWND window)
+{
+    HMENU menuBar = CreateMenu();
+    fileMenu = CreatePopupMenu();
+    playlistMenu = CreatePopupMenu();
+    trackMenu = CreatePopupMenu();
+    if (menuBar == nullptr || fileMenu == nullptr ||
+        playlistMenu == nullptr || trackMenu == nullptr)
+    {
+        if (menuBar != nullptr) DestroyMenu(menuBar);
+        if (fileMenu != nullptr) DestroyMenu(fileMenu);
+        if (playlistMenu != nullptr) DestroyMenu(playlistMenu);
+        if (trackMenu != nullptr) DestroyMenu(trackMenu);
+        fileMenu = nullptr;
+        playlistMenu = nullptr;
+        trackMenu = nullptr;
+        return false;
+    }
+
+    AppendMenuW(fileMenu, MF_STRING, CommandOpenAudioFiles,
+                L"Open Audio Files...");
+    AppendMenuW(fileMenu, MF_STRING, CommandImportPlaylist,
+                L"Import Playlist...");
+    AppendMenuW(fileMenu, MF_STRING, CommandExportM3U8,
+                L"Export M3U8...");
+    AppendMenuW(fileMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(fileMenu, MF_STRING, CommandExit, L"Exit");
+
+    AppendMenuW(playlistMenu, MF_STRING, CommandNewPlaylist,
+                L"New Playlist");
+    AppendMenuW(playlistMenu, MF_STRING, CommandRenamePlaylist,
+                L"Rename Playlist");
+    AppendMenuW(playlistMenu, MF_STRING, CommandDeletePlaylist,
+                L"Delete Playlist");
+
+    AppendMenuW(trackMenu, MF_STRING, CommandGetTrackMetadata,
+                L"Get Metadata");
+    AppendMenuW(trackMenu, MF_STRING, CommandOpenTracksInExplorer,
+                L"Open in Explorer");
+    AppendMenuW(trackMenu, MF_STRING, CommandShowTrackProperties,
+                L"Properties");
+    AppendMenuW(trackMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(trackMenu, MF_STRING, CommandDeleteTracks, L"Delete");
+
+    AppendMenuW(menuBar, MF_POPUP,
+                reinterpret_cast<UINT_PTR>(fileMenu), L"&File");
+    AppendMenuW(menuBar, MF_POPUP,
+                reinterpret_cast<UINT_PTR>(playlistMenu), L"&Playlist");
+    AppendMenuW(menuBar, MF_POPUP,
+                reinterpret_cast<UINT_PTR>(trackMenu), L"&Track");
+
+    if (!SetMenu(window, menuBar))
+    {
+        DestroyMenu(menuBar);
+        fileMenu = nullptr;
+        playlistMenu = nullptr;
+        trackMenu = nullptr;
+        return false;
+    }
+    UpdateMainMenuState();
+    return true;
 }
 
 bool IsUsableTrackFile(const std::wstring& path)
@@ -1546,6 +1653,117 @@ void ImportM3U8(HWND window, const std::wstring& filePath)
     RefreshSelectedTrackList();
 }
 
+bool AddAudioTrackFromPath(const std::wstring& path)
+{
+    Playlist* playlist = GetSelectedPlaylist();
+    if (playlist == nullptr || !IsSupportedAudioPath(path))
+    {
+        return false;
+    }
+    AddTrack(*playlist, CreateTrackFromFile(path));
+    return true;
+}
+
+std::vector<std::wstring> SelectAudioFiles(HWND window)
+{
+    constexpr DWORD FilePathBufferLength = 32768;
+    std::vector<wchar_t> buffer(FilePathBufferLength, L'\0');
+    constexpr wchar_t FileFilter[] =
+        L"Audio Files (*.mp3;*.flac;*.wav;*.m4a;*.ogg)\0"
+        L"*.mp3;*.flac;*.wav;*.m4a;*.ogg\0";
+
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = window;
+    dialog.lpstrFilter = FileFilter;
+    dialog.nFilterIndex = 1;
+    dialog.lpstrFile = buffer.data();
+    dialog.nMaxFile = static_cast<DWORD>(buffer.size());
+    dialog.lpstrTitle = L"Open Audio Files";
+    dialog.Flags = OFN_ALLOWMULTISELECT | OFN_EXPLORER |
+                   OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
+                   OFN_NOCHANGEDIR;
+
+    if (!GetOpenFileNameW(&dialog))
+    {
+        if (CommDlgExtendedError() != 0)
+        {
+            MessageBoxW(window, L"The Open dialog could not be opened.",
+                        WindowTitle, MB_OK | MB_ICONERROR);
+        }
+        return {};
+    }
+
+    const wchar_t* firstEntry = buffer.data();
+    const wchar_t* nextEntry = firstEntry + std::wcslen(firstEntry) + 1;
+    if (*nextEntry == L'\0')
+    {
+        return {firstEntry};
+    }
+
+    const std::filesystem::path directory(firstEntry);
+    std::vector<std::wstring> paths;
+    while (*nextEntry != L'\0')
+    {
+        paths.push_back((directory / nextEntry).lexically_normal().wstring());
+        nextEntry += std::wcslen(nextEntry) + 1;
+    }
+    return paths;
+}
+
+void OpenAudioFiles(HWND window)
+{
+    if (!HasSelectedPlaylist())
+    {
+        MessageBoxW(window, L"No playlist selected. Create a playlist first.",
+                    WindowTitle, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    const std::vector<std::wstring> paths = SelectAudioFiles(window);
+    bool addedAudioTrack = false;
+    for (const std::wstring& path : paths)
+    {
+        addedAudioTrack = AddAudioTrackFromPath(path) || addedAudioTrack;
+    }
+    if (addedAudioTrack)
+    {
+        MarkAppStateDirty();
+        RefreshSelectedTrackList();
+    }
+}
+
+void ImportPlaylistFromDialog(HWND window)
+{
+    constexpr DWORD FilePathBufferLength = 32768;
+    std::vector<wchar_t> buffer(FilePathBufferLength, L'\0');
+    constexpr wchar_t FileFilter[] =
+        L"m3u8 Playlist (*.m3u8)\0*.m3u8\0";
+
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = window;
+    dialog.lpstrFilter = FileFilter;
+    dialog.nFilterIndex = 1;
+    dialog.lpstrFile = buffer.data();
+    dialog.nMaxFile = static_cast<DWORD>(buffer.size());
+    dialog.lpstrDefExt = L"m3u8";
+    dialog.lpstrTitle = L"Import Playlist";
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
+                   OFN_NOCHANGEDIR;
+
+    if (!GetOpenFileNameW(&dialog))
+    {
+        if (CommDlgExtendedError() != 0)
+        {
+            MessageBoxW(window, L"The Open dialog could not be opened.",
+                        WindowTitle, MB_OK | MB_ICONERROR);
+        }
+        return;
+    }
+    ImportM3U8(window, buffer.data());
+}
+
 void HandleDroppedFiles(HWND window, HDROP drop)
 {
     POINT dropPoint{};
@@ -1573,9 +1791,8 @@ void HandleDroppedFiles(HWND window, HDROP drop)
             }
             if (IsSupportedAudioPath(path))
             {
-                if (Playlist* selectedPlaylist = GetSelectedPlaylist())
+                if (AddAudioTrackFromPath(path))
                 {
-                    AddTrack(*selectedPlaylist, CreateTrackFromFile(path));
                     addedAudioTrack = true;
                 }
                 else if (!showedNoPlaylistMessage)
@@ -1603,6 +1820,10 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
     switch (message)
     {
     case WM_CREATE:
+        if (!CreateMainMenuBar(window))
+        {
+            return -1;
+        }
         playlistListView = CreateWindowExW(
             WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
             WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL |
@@ -1659,6 +1880,15 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
     case WM_COMMAND:
         switch (LOWORD(wParam))
         {
+        case CommandOpenAudioFiles:
+            OpenAudioFiles(window);
+            return 0;
+        case CommandImportPlaylist:
+            ImportPlaylistFromDialog(window);
+            return 0;
+        case CommandExit:
+            SendMessageW(window, WM_CLOSE, 0, 0);
+            return 0;
         case CommandNewPlaylist:
             CreateNewPlaylist();
             return 0;
@@ -1685,6 +1915,10 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             return 0;
         }
         break;
+
+    case WM_INITMENUPOPUP:
+        UpdateMainMenuState();
+        return 0;
 
     case WM_NOTIFY:
     {
@@ -1974,6 +2208,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             statusFont = nullptr;
         }
         mainWindow = nullptr;
+        fileMenu = nullptr;
+        playlistMenu = nullptr;
+        trackMenu = nullptr;
         PostQuitMessage(0);
         return 0;
     }
