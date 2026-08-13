@@ -324,7 +324,13 @@ Playlist LoadM3U8(const std::wstring& filePath)
     return playlist;
 }
 
-std::wstring BuildGeneratedExtinfText(const Track& track)
+bool HasUsefulMetadataForExtinf(const Track& track)
+{
+    return !track.title.empty() || !track.artist.empty() ||
+           !track.album.empty() || !track.comment.empty();
+}
+
+std::wstring BuildMetadataExtinfText(const Track& track)
 {
     std::wstring result;
     if (!track.artist.empty())
@@ -357,22 +363,28 @@ std::wstring BuildGeneratedExtinfText(const Track& track)
 
 std::wstring BuildExtinfText(const Track& track)
 {
+    if (HasUsefulMetadataForExtinf(track))
+    {
+        return BuildMetadataExtinfText(track);
+    }
     if (!track.extinfText.empty())
     {
         return track.extinfText;
     }
-    return BuildGeneratedExtinfText(track);
+    return track.path.empty()
+        ? L""
+        : std::filesystem::path(track.path).stem().wstring();
 }
 
 int GetExportDuration(const Track& track)
 {
-    if (track.extinfDuration >= 0)
-    {
-        return track.extinfDuration;
-    }
     if (track.durationSeconds >= 0)
     {
         return track.durationSeconds;
+    }
+    if (track.extinfDuration >= 0)
+    {
+        return track.extinfDuration;
     }
     return -1;
 }
