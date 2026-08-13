@@ -56,6 +56,7 @@ constexpr int OrganizerNewGroupButtonId = 2003;
 constexpr int OrganizerCloseButtonId = 2004;
 constexpr UINT OrganizerCommandNewGroup = 2101;
 constexpr UINT OrganizerCommandRenameGroup = 2102;
+constexpr UINT OrganizerMoveToGroupCommandBase = 22000;
 
 HWND mainWindow = nullptr;
 HWND playlistListView = nullptr;
@@ -74,6 +75,7 @@ HWND organizerCloseButton = nullptr;
 int selectedOrganizerGroupIndex = 0;
 bool isRefreshingOrganizerGroups = false;
 std::vector<int> organizerVisiblePlaylistIndices;
+std::vector<int> organizerMoveMenuGroupIds;
 HFONT statusFont = nullptr;
 int statusHeight = 32;
 int splitterX = 240;
@@ -2198,6 +2200,130 @@ std::vector<int> GetSelectedOrganizerPlaylistRows()
     return rows;
 }
 
+std::vector<int> GetSelectedOrganizerPlaylistIndices()
+{
+    std::vector<int> playlistIndices;
+    for (const int row : GetSelectedOrganizerPlaylistRows())
+    {
+        if (row >= 0 &&
+            row < static_cast<int>(organizerVisiblePlaylistIndices.size()))
+        {
+            playlistIndices.push_back(
+                organizerVisiblePlaylistIndices[static_cast<std::size_t>(row)]);
+        }
+    }
+    return playlistIndices;
+}
+
+bool MoveOrganizerPlaylistsToGroup(
+    const std::vector<int>& selectedIndices, int targetGroupId)
+{
+    if (FindPlaylistGroupById(playlistGroups, targetGroupId) == nullptr ||
+        selectedOrganizerGroupIndex < 0 ||
+        selectedOrganizerGroupIndex >=
+            static_cast<int>(playlistGroups.size()) ||
+        playlistGroups[static_cast<std::size_t>(
+            selectedOrganizerGroupIndex)].id == targetGroupId)
+    {
+        return false;
+    }
+
+    if (selectedIndices.empty())
+    {
+        return false;
+    }
+
+    std::vector<bool> isSelected(playlists.size(), false);
+    for (const int playlistIndex : selectedIndices)
+    {
+        if (playlistIndex < 0 ||
+            playlistIndex >= static_cast<int>(playlists.size()))
+        {
+            return false;
+        }
+        isSelected[static_cast<std::size_t>(playlistIndex)] = true;
+    }
+
+    struct IndexedPlaylist
+    {
+        int originalIndex = -1;
+        Playlist playlist;
+    };
+
+    std::vector<IndexedPlaylist> remaining;
+    std::vector<IndexedPlaylist> moving;
+    remaining.reserve(playlists.size() - selectedIndices.size());
+    moving.reserve(selectedIndices.size());
+    for (std::size_t index = 0; index < playlists.size(); ++index)
+    {
+        IndexedPlaylist item{
+            static_cast<int>(index), std::move(playlists[index])};
+        if (isSelected[index])
+        {
+            item.playlist.groupId = targetGroupId;
+            moving.push_back(std::move(item));
+        }
+        else
+        {
+            remaining.push_back(std::move(item));
+        }
+    }
+
+    std::size_t insertionIndex = remaining.size();
+    bool foundTargetPlaylist = false;
+    for (std::size_t index = 0; index < remaining.size(); ++index)
+    {
+        if (remaining[index].playlist.groupId == targetGroupId)
+        {
+            insertionIndex = index + 1;
+            foundTargetPlaylist = true;
+        }
+    }
+    if (!foundTargetPlaylist)
+    {
+        insertionIndex = remaining.size();
+    }
+
+    const int previousSelectedPlaylistIndex = selectedPlaylistIndex;
+    int newSelectedPlaylistIndex = -1;
+    std::vector<Playlist> reordered;
+    reordered.reserve(playlists.size());
+    auto appendPlaylist = [&](IndexedPlaylist& item)
+    {
+        if (item.originalIndex == previousSelectedPlaylistIndex)
+        {
+            newSelectedPlaylistIndex = static_cast<int>(reordered.size());
+        }
+        reordered.push_back(std::move(item.playlist));
+    };
+
+    for (std::size_t index = 0; index < insertionIndex; ++index)
+    {
+        appendPlaylist(remaining[index]);
+    }
+    for (IndexedPlaylist& item : moving)
+    {
+        appendPlaylist(item);
+    }
+    for (std::size_t index = insertionIndex; index < remaining.size(); ++index)
+    {
+        appendPlaylist(remaining[index]);
+    }
+
+    playlists = std::move(reordered);
+    selectedPlaylistIndex = newSelectedPlaylistIndex;
+    MarkAppStateDirty();
+    RefreshOrganizerPlaylistList();
+    SetFocus(organizerPlaylistList);
+    return true;
+}
+
+bool MoveSelectedOrganizerPlaylistsToGroup(int targetGroupId)
+{
+    return MoveOrganizerPlaylistsToGroup(
+        GetSelectedOrganizerPlaylistIndices(), targetGroupId);
+}
+
 bool MoveOrganizerPlaylists(int direction)
 {
     const std::vector<int> selectedRows =
@@ -2329,6 +2455,98 @@ void ShowOrganizerGroupContextMenu(HWND window, LPARAM lParam)
     }
 }
 
+void ShowOrganizerPlaylistContextMenu(HWND window, LPARAM lParam)
+{
+    POINT screenPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+    if (screenPoint.x != -1 || screenPoint.y != -1)
+    {
+        POINT clientPoint = screenPoint;
+        ScreenToClient(organizerPlaylistList, &clientPoint);
+        LVHITTESTINFO hitTest{};
+        hitTest.pt = clientPoint;
+        const int row = ListView_HitTest(organizerPlaylistList, &hitTest);
+        if (row < 0)
+        {
+            return;
+        }
+        if ((ListView_GetItemState(organizerPlaylistList, row,
+                                   LVIS_SELECTED) & LVIS_SELECTED) == 0)
+        {
+            ListView_SetItemState(organizerPlaylistList, -1, 0,
+                                  LVIS_SELECTED | LVIS_FOCUSED);
+            ListView_SetItemState(organizerPlaylistList, row,
+                                  LVIS_SELECTED | LVIS_FOCUSED,
+                                  LVIS_SELECTED | LVIS_FOCUSED);
+        }
+    }
+    else
+    {
+        const int row = ListView_GetNextItem(
+            organizerPlaylistList, -1, LVNI_SELECTED);
+        if (row < 0)
+        {
+            return;
+        }
+        RECT itemRect{};
+        if (ListView_GetItemRect(organizerPlaylistList, row,
+                                 &itemRect, LVIR_BOUNDS))
+        {
+            screenPoint = {itemRect.left, itemRect.bottom};
+            ClientToScreen(organizerPlaylistList, &screenPoint);
+        }
+    }
+    if (GetSelectedOrganizerPlaylistRows().empty())
+    {
+        return;
+    }
+
+    SetFocus(organizerPlaylistList);
+    HMENU menu = CreatePopupMenu();
+    HMENU moveMenu = CreatePopupMenu();
+    if (menu == nullptr || moveMenu == nullptr)
+    {
+        if (moveMenu != nullptr)
+        {
+            DestroyMenu(moveMenu);
+        }
+        if (menu != nullptr)
+        {
+            DestroyMenu(menu);
+        }
+        return;
+    }
+
+    organizerMoveMenuGroupIds.clear();
+    organizerMoveMenuGroupIds.reserve(playlistGroups.size());
+    const int currentGroupId =
+        selectedOrganizerGroupIndex >= 0 &&
+        selectedOrganizerGroupIndex < static_cast<int>(playlistGroups.size())
+            ? playlistGroups[static_cast<std::size_t>(
+                  selectedOrganizerGroupIndex)].id
+            : -1;
+    for (const PlaylistGroup& group : playlistGroups)
+    {
+        const UINT command = OrganizerMoveToGroupCommandBase +
+            static_cast<UINT>(organizerMoveMenuGroupIds.size());
+        organizerMoveMenuGroupIds.push_back(group.id);
+        AppendMenuW(moveMenu,
+                    MF_STRING | (group.id == currentGroupId
+                        ? MF_GRAYED : MF_ENABLED),
+                    command, group.name.c_str());
+    }
+    AppendMenuW(menu, MF_POPUP,
+                reinterpret_cast<UINT_PTR>(moveMenu), L"Move to");
+
+    const UINT command = TrackPopupMenu(
+        menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+        screenPoint.x, screenPoint.y, 0, window, nullptr);
+    DestroyMenu(menu);
+    if (command != 0)
+    {
+        SendMessageW(window, WM_COMMAND, MAKEWPARAM(command, 0), 0);
+    }
+}
+
 void LayoutOrganizerChildren(HWND window)
 {
     RECT client{};
@@ -2427,6 +2645,17 @@ LRESULT CALLBACK PlaylistOrganizerWindowProcedure(
         LayoutOrganizerChildren(window);
         return 0;
     case WM_COMMAND:
+        if (LOWORD(wParam) >= OrganizerMoveToGroupCommandBase)
+        {
+            const std::size_t mappingIndex =
+                LOWORD(wParam) - OrganizerMoveToGroupCommandBase;
+            if (mappingIndex < organizerMoveMenuGroupIds.size())
+            {
+                MoveSelectedOrganizerPlaylistsToGroup(
+                    organizerMoveMenuGroupIds[mappingIndex]);
+                return 0;
+            }
+        }
         switch (LOWORD(wParam))
         {
         case OrganizerNewGroupButtonId:
@@ -2513,6 +2742,11 @@ LRESULT CALLBACK PlaylistOrganizerWindowProcedure(
         if (reinterpret_cast<HWND>(wParam) == organizerGroupList)
         {
             ShowOrganizerGroupContextMenu(window, lParam);
+            return 0;
+        }
+        if (reinterpret_cast<HWND>(wParam) == organizerPlaylistList)
+        {
+            ShowOrganizerPlaylistContextMenu(window, lParam);
             return 0;
         }
         break;
