@@ -57,6 +57,7 @@ constexpr int OrganizerCloseButtonId = 2004;
 constexpr UINT OrganizerCommandNewGroup = 2101;
 constexpr UINT OrganizerCommandRenameGroup = 2102;
 constexpr UINT OrganizerCommandDeleteGroup = 2103;
+constexpr UINT OrganizerCommandDeletePlaylists = 2104;
 constexpr UINT OrganizerMoveToGroupCommandBase = 22000;
 
 HWND mainWindow = nullptr;
@@ -2285,6 +2286,94 @@ std::vector<int> GetSelectedOrganizerPlaylistIndices()
     return playlistIndices;
 }
 
+bool DeletePlaylistsByIndices(std::vector<int> playlistIndices)
+{
+    if (playlistIndices.empty())
+    {
+        return false;
+    }
+    std::sort(playlistIndices.begin(), playlistIndices.end());
+    playlistIndices.erase(
+        std::unique(playlistIndices.begin(), playlistIndices.end()),
+        playlistIndices.end());
+    if (playlistIndices.front() < 0 ||
+        playlistIndices.back() >= static_cast<int>(playlists.size()))
+    {
+        return false;
+    }
+
+    std::vector<bool> isDeleted(playlists.size(), false);
+    for (const int playlistIndex : playlistIndices)
+    {
+        isDeleted[static_cast<std::size_t>(playlistIndex)] = true;
+    }
+
+    const int previousSelectedPlaylistIndex = selectedPlaylistIndex;
+    int newSelectedPlaylistIndex = -1;
+    std::vector<Playlist> remaining;
+    remaining.reserve(playlists.size() - playlistIndices.size());
+    for (std::size_t oldIndex = 0; oldIndex < playlists.size(); ++oldIndex)
+    {
+        if (isDeleted[oldIndex])
+        {
+            continue;
+        }
+        if (static_cast<int>(oldIndex) == previousSelectedPlaylistIndex)
+        {
+            newSelectedPlaylistIndex = static_cast<int>(remaining.size());
+        }
+        remaining.push_back(std::move(playlists[oldIndex]));
+    }
+
+    playlists = std::move(remaining);
+    selectedPlaylistIndex = newSelectedPlaylistIndex;
+    MarkAppStateDirty();
+    RefreshOrganizerPlaylistList();
+    SetFocus(organizerPlaylistList);
+    return true;
+}
+
+void ConfirmAndDeleteOrganizerPlaylists(HWND window)
+{
+    const std::vector<int> playlistIndices =
+        GetSelectedOrganizerPlaylistIndices();
+    if (playlistIndices.empty())
+    {
+        return;
+    }
+
+    std::wstring message;
+    if (playlistIndices.size() == 1)
+    {
+        const int playlistIndex = playlistIndices.front();
+        if (playlistIndex < 0 ||
+            playlistIndex >= static_cast<int>(playlists.size()))
+        {
+            return;
+        }
+        message = L"Delete playlist \"" +
+            playlists[static_cast<std::size_t>(playlistIndex)].name + L"\"?";
+    }
+    else
+    {
+        message = L"Delete " + std::to_wstring(playlistIndices.size()) +
+            L" playlists?";
+    }
+    message += L"\n\nThis removes the playlist";
+    if (playlistIndices.size() != 1)
+    {
+        message += L"s";
+    }
+    message += L" from Playlist Manager.\n"
+               L"Audio files and playlist files will not be deleted.";
+
+    if (MessageBoxW(window, message.c_str(), L"Playlist Organizer",
+                    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES)
+    {
+        DeletePlaylistsByIndices(playlistIndices);
+    }
+}
+
 bool MoveOrganizerPlaylistsToGroup(
     const std::vector<int>& selectedIndices, int targetGroupId)
 {
@@ -2617,6 +2706,9 @@ void ShowOrganizerPlaylistContextMenu(HWND window, LPARAM lParam)
     }
     AppendMenuW(menu, MF_POPUP,
                 reinterpret_cast<UINT_PTR>(moveMenu), L"Move to");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, OrganizerCommandDeletePlaylists,
+                L"Delete Playlist");
 
     const UINT command = TrackPopupMenu(
         menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
@@ -2748,6 +2840,9 @@ LRESULT CALLBACK PlaylistOrganizerWindowProcedure(
             return 0;
         case OrganizerCommandDeleteGroup:
             ConfirmAndDeleteOrganizerGroup(window, organizerContextGroupId);
+            return 0;
+        case OrganizerCommandDeletePlaylists:
+            ConfirmAndDeleteOrganizerPlaylists(window);
             return 0;
         case OrganizerCloseButtonId:
             SendMessageW(window, WM_CLOSE, 0, 0);
