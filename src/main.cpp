@@ -43,6 +43,8 @@ constexpr UINT CommandOpenAudioFiles = 1009;
 constexpr UINT CommandImportPlaylist = 1010;
 constexpr UINT CommandExit = 1011;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
+constexpr UINT MessagePreparePlaylistLabelEdit = WM_APP + 2;
+constexpr UINT MessageTogglePlaylistGroup = WM_APP + 3;
 constexpr UINT_PTR AppStateTimerId = 1;
 constexpr UINT AppStateTimerIntervalMs = 60'000;
 
@@ -82,6 +84,21 @@ bool isRefreshingPlaylistList = false;
 bool isRefreshingTrackList = false;
 bool appStateDirty = false;
 bool appStateTrackingEnabled = false;
+
+enum class PlaylistListRowType
+{
+    Group,
+    Playlist
+};
+
+struct PlaylistListRow
+{
+    PlaylistListRowType type = PlaylistListRowType::Group;
+    int groupIndex = -1;
+    int playlistIndex = -1;
+};
+
+std::vector<PlaylistListRow> visiblePlaylistRows;
 
 struct ListTooltipState
 {
@@ -298,25 +315,115 @@ Playlist* GetSelectedPlaylist()
     return &playlists[static_cast<std::size_t>(selectedPlaylistIndex)];
 }
 
-void RefreshPlaylistList(HWND listView,
-                         const std::vector<Playlist>& playlistData)
+int GetPlaylistIndexFromVisibleRow(int row)
+{
+    if (row < 0 || row >= static_cast<int>(visiblePlaylistRows.size()))
+    {
+        return -1;
+    }
+    const PlaylistListRow& visibleRow =
+        visiblePlaylistRows[static_cast<std::size_t>(row)];
+    return visibleRow.type == PlaylistListRowType::Playlist
+        ? visibleRow.playlistIndex
+        : -1;
+}
+
+int GetGroupIndexFromVisibleRow(int row)
+{
+    if (row < 0 || row >= static_cast<int>(visiblePlaylistRows.size()))
+    {
+        return -1;
+    }
+    const PlaylistListRow& visibleRow =
+        visiblePlaylistRows[static_cast<std::size_t>(row)];
+    return visibleRow.type == PlaylistListRowType::Group
+        ? visibleRow.groupIndex
+        : -1;
+}
+
+int FindVisibleRowForPlaylist(int playlistIndex)
+{
+    for (std::size_t row = 0; row < visiblePlaylistRows.size(); ++row)
+    {
+        if (visiblePlaylistRows[row].type == PlaylistListRowType::Playlist &&
+            visiblePlaylistRows[row].playlistIndex == playlistIndex)
+        {
+            return static_cast<int>(row);
+        }
+    }
+    return -1;
+}
+
+std::wstring GetGroupDisplayText(const PlaylistGroup& group)
+{
+    return (group.expanded ? L"\u25bc " : L"\u25b6 ") + group.name;
+}
+
+std::wstring GetPlaylistDisplayText(const Playlist& playlist)
+{
+    return L"    " + playlist.name;
+}
+
+bool EnsurePlaylistGroupExpanded(int groupId)
+{
+    PlaylistGroup* group = FindPlaylistGroupById(playlistGroups, groupId);
+    if (group == nullptr || group->expanded)
+    {
+        return false;
+    }
+    group->expanded = true;
+    return true;
+}
+
+void RefreshPlaylistList(HWND listView)
 {
     ResetListTooltip(playlistTooltipState);
     isRefreshingPlaylistList = true;
     ListView_DeleteAllItems(listView);
-    for (std::size_t index = 0; index < playlistData.size(); ++index)
+    visiblePlaylistRows.clear();
+
+    for (std::size_t groupIndex = 0; groupIndex < playlistGroups.size();
+         ++groupIndex)
     {
-        InsertListItem(listView, static_cast<int>(index),
-                       playlistData[index].name);
+        const PlaylistGroup& group = playlistGroups[groupIndex];
+        visiblePlaylistRows.push_back(
+            {PlaylistListRowType::Group,
+             static_cast<int>(groupIndex), -1});
+        InsertListItem(listView,
+                       static_cast<int>(visiblePlaylistRows.size()) - 1,
+                       GetGroupDisplayText(group));
+        if (!group.expanded)
+        {
+            continue;
+        }
+        for (std::size_t playlistIndex = 0;
+             playlistIndex < playlists.size(); ++playlistIndex)
+        {
+            if (playlists[playlistIndex].groupId != group.id)
+            {
+                continue;
+            }
+            visiblePlaylistRows.push_back(
+                {PlaylistListRowType::Playlist, static_cast<int>(groupIndex),
+                 static_cast<int>(playlistIndex)});
+            InsertListItem(listView,
+                           static_cast<int>(visiblePlaylistRows.size()) - 1,
+                           GetPlaylistDisplayText(playlists[playlistIndex]));
+        }
     }
 
     if (selectedPlaylistIndex >= 0 &&
-        selectedPlaylistIndex < static_cast<int>(playlistData.size()))
+        selectedPlaylistIndex < static_cast<int>(playlists.size()))
     {
-        ListView_SetItemState(listView, selectedPlaylistIndex,
-                              LVIS_SELECTED | LVIS_FOCUSED,
-                              LVIS_SELECTED | LVIS_FOCUSED);
-        ListView_EnsureVisible(listView, selectedPlaylistIndex, FALSE);
+        const int selectedRow =
+            FindVisibleRowForPlaylist(selectedPlaylistIndex);
+        if (selectedRow >= 0)
+        {
+            ListView_SetItemState(listView, selectedRow,
+                                  LVIS_SELECTED | LVIS_FOCUSED,
+                                  LVIS_SELECTED | LVIS_FOCUSED);
+            ListView_EnsureVisible(listView, selectedRow, FALSE);
+        }
     }
     else
     {
@@ -406,10 +513,28 @@ std::wstring GetTooltipCellText(HWND listView, int row, int column)
 {
     if (listView == playlistListView)
     {
-        return column == 0 && row >= 0 &&
-                       row < static_cast<int>(playlists.size())
-            ? playlists[static_cast<std::size_t>(row)].name
-            : L"";
+        if (column != 0 || row < 0 ||
+            row >= static_cast<int>(visiblePlaylistRows.size()))
+        {
+            return L"";
+        }
+        const PlaylistListRow& visibleRow =
+            visiblePlaylistRows[static_cast<std::size_t>(row)];
+        if (visibleRow.type == PlaylistListRowType::Group &&
+            visibleRow.groupIndex >= 0 &&
+            visibleRow.groupIndex < static_cast<int>(playlistGroups.size()))
+        {
+            return playlistGroups[
+                static_cast<std::size_t>(visibleRow.groupIndex)].name;
+        }
+        if (visibleRow.type == PlaylistListRowType::Playlist &&
+            visibleRow.playlistIndex >= 0 &&
+            visibleRow.playlistIndex < static_cast<int>(playlists.size()))
+        {
+            return playlists[
+                static_cast<std::size_t>(visibleRow.playlistIndex)].name;
+        }
+        return L"";
     }
 
     const Playlist* playlist = GetSelectedPlaylist();
@@ -420,6 +545,30 @@ std::wstring GetTooltipCellText(HWND listView, int row, int column)
     }
     return GetTrackDisplayText(
         playlist->tracks[static_cast<std::size_t>(row)], column);
+}
+
+std::wstring GetTooltipMeasurementText(HWND listView, int row, int column,
+                                       const std::wstring& tooltipText)
+{
+    if (listView != playlistListView || column != 0 || row < 0 ||
+        row >= static_cast<int>(visiblePlaylistRows.size()))
+    {
+        return tooltipText;
+    }
+    const PlaylistListRow& visibleRow =
+        visiblePlaylistRows[static_cast<std::size_t>(row)];
+    if (visibleRow.type == PlaylistListRowType::Group &&
+        visibleRow.groupIndex >= 0 &&
+        visibleRow.groupIndex < static_cast<int>(playlistGroups.size()))
+    {
+        return GetGroupDisplayText(playlistGroups[
+            static_cast<std::size_t>(visibleRow.groupIndex)]);
+    }
+    if (visibleRow.type == PlaylistListRowType::Playlist)
+    {
+        return L"    " + tooltipText;
+    }
+    return tooltipText;
 }
 
 bool IsCellTextTruncated(HWND listView, const RECT& cellRect,
@@ -506,7 +655,9 @@ void UpdateListTooltip(ListTooltipState& state, POINT mousePosition)
     }
     const std::wstring text = GetTooltipCellText(
         state.listView, row, column);
-    if (!IsCellTextTruncated(state.listView, cellRect, text))
+    const std::wstring measurementText = GetTooltipMeasurementText(
+        state.listView, row, column, text);
+    if (!IsCellTextTruncated(state.listView, cellRect, measurementText))
     {
         ResetListTooltip(state);
         return;
@@ -1024,7 +1175,23 @@ bool MoveSelectedPlaylist(int direction)
         return false;
     }
 
-    const int destinationIndex = selectedPlaylistIndex + direction;
+    const int selectedRow = ListView_GetNextItem(
+        playlistListView, -1, LVNI_SELECTED);
+    if (GetPlaylistIndexFromVisibleRow(selectedRow) != selectedPlaylistIndex)
+    {
+        return false;
+    }
+
+    const int groupId = playlists[
+        static_cast<std::size_t>(selectedPlaylistIndex)].groupId;
+    int destinationIndex = selectedPlaylistIndex + direction;
+    while (destinationIndex >= 0 &&
+           destinationIndex < static_cast<int>(playlists.size()) &&
+           playlists[static_cast<std::size_t>(destinationIndex)].groupId !=
+               groupId)
+    {
+        destinationIndex += direction;
+    }
     if (destinationIndex < 0 ||
         destinationIndex >= static_cast<int>(playlists.size()))
     {
@@ -1034,7 +1201,7 @@ bool MoveSelectedPlaylist(int direction)
     std::swap(playlists[static_cast<std::size_t>(selectedPlaylistIndex)],
               playlists[static_cast<std::size_t>(destinationIndex)]);
     selectedPlaylistIndex = destinationIndex;
-    RefreshPlaylistList(playlistListView, playlists);
+    RefreshPlaylistList(playlistListView);
     SetFocus(playlistListView);
     MarkAppStateDirty();
     return true;
@@ -1213,11 +1380,16 @@ void CreateNewPlaylist()
     playlists.push_back(Playlist{MakeNewPlaylistName(), L"",
                                  NewPlaylistGroupId, {}, false});
     selectedPlaylistIndex = static_cast<int>(playlists.size()) - 1;
+    EnsurePlaylistGroupExpanded(NewPlaylistGroupId);
     MarkAppStateDirty();
-    RefreshPlaylistList(playlistListView, playlists);
+    RefreshPlaylistList(playlistListView);
     RefreshSelectedTrackList();
     SetFocus(playlistListView);
-    ListView_EditLabel(playlistListView, selectedPlaylistIndex);
+    const int selectedRow = FindVisibleRowForPlaylist(selectedPlaylistIndex);
+    if (selectedRow >= 0)
+    {
+        ListView_EditLabel(playlistListView, selectedRow);
+    }
 }
 
 void RenameSelectedPlaylist()
@@ -1227,8 +1399,18 @@ void RenameSelectedPlaylist()
         return;
     }
 
-    SetFocus(playlistListView);
-    ListView_EditLabel(playlistListView, selectedPlaylistIndex);
+    const int groupId = GetSelectedPlaylist()->groupId;
+    if (EnsurePlaylistGroupExpanded(groupId))
+    {
+        MarkAppStateDirty();
+        RefreshPlaylistList(playlistListView);
+    }
+    const int selectedRow = FindVisibleRowForPlaylist(selectedPlaylistIndex);
+    if (selectedRow >= 0)
+    {
+        SetFocus(playlistListView);
+        ListView_EditLabel(playlistListView, selectedRow);
+    }
 }
 
 void DeleteSelectedPlaylist(HWND window)
@@ -1263,7 +1445,7 @@ void DeleteSelectedPlaylist(HWND window)
     }
 
     MarkAppStateDirty();
-    RefreshPlaylistList(playlistListView, playlists);
+    RefreshPlaylistList(playlistListView);
     RefreshSelectedTrackList();
 }
 
@@ -1363,24 +1545,32 @@ void SelectPlaylist(int index)
     }
     ListView_SetItemState(playlistListView, -1, 0,
                           LVIS_SELECTED | LVIS_FOCUSED);
-    ListView_SetItemState(playlistListView, index,
-                          LVIS_SELECTED | LVIS_FOCUSED,
-                          LVIS_SELECTED | LVIS_FOCUSED);
+    const int visibleRow = FindVisibleRowForPlaylist(index);
+    if (visibleRow >= 0)
+    {
+        ListView_SetItemState(playlistListView, visibleRow,
+                              LVIS_SELECTED | LVIS_FOCUSED,
+                              LVIS_SELECTED | LVIS_FOCUSED);
+    }
     RefreshSelectedTrackList();
 }
 
 void ShowPlaylistContextMenu(HWND window, LPARAM lParam)
 {
     POINT screenPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+    bool contextHasPlaylist = false;
     if (screenPoint.x == -1 && screenPoint.y == -1)
     {
         RECT itemRect{};
-        if (selectedPlaylistIndex >= 0 &&
-            ListView_GetItemRect(playlistListView, selectedPlaylistIndex,
+        const int selectedRow =
+            FindVisibleRowForPlaylist(selectedPlaylistIndex);
+        if (selectedRow >= 0 &&
+            ListView_GetItemRect(playlistListView, selectedRow,
                                  &itemRect, LVIR_BOUNDS))
         {
             screenPoint = {itemRect.left, itemRect.bottom};
             ClientToScreen(playlistListView, &screenPoint);
+            contextHasPlaylist = true;
         }
         else
         {
@@ -1396,9 +1586,12 @@ void ShowPlaylistContextMenu(HWND window, LPARAM lParam)
         LVHITTESTINFO hitTest{};
         hitTest.pt = listPoint;
         const int hitIndex = ListView_HitTest(playlistListView, &hitTest);
-        if (hitIndex >= 0)
+        const int playlistIndex =
+            GetPlaylistIndexFromVisibleRow(hitIndex);
+        if (playlistIndex >= 0)
         {
-            SelectPlaylist(hitIndex);
+            SelectPlaylist(playlistIndex);
+            contextHasPlaylist = true;
         }
     }
 
@@ -1410,8 +1603,9 @@ void ShowPlaylistContextMenu(HWND window, LPARAM lParam)
 
     AppendMenuW(menu, MF_STRING, CommandNewPlaylist, L"New Playlist");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    const UINT selectionState =
-        GetSelectedPlaylist() == nullptr ? MF_GRAYED : MF_ENABLED;
+    const UINT selectionState = contextHasPlaylist
+        ? MF_ENABLED
+        : MF_GRAYED;
     AppendMenuW(menu, MF_STRING | selectionState,
                 CommandRenamePlaylist, L"Rename");
     AppendMenuW(menu, MF_STRING | selectionState,
@@ -1642,10 +1836,12 @@ void ImportM3U8(HWND window, const std::wstring& filePath)
 
     if (mode == M3U8LoadMode::NewPlaylist)
     {
+        loadedPlaylist.groupId = NewPlaylistGroupId;
         playlists.push_back(std::move(loadedPlaylist));
         selectedPlaylistIndex = static_cast<int>(playlists.size()) - 1;
+        EnsurePlaylistGroupExpanded(NewPlaylistGroupId);
         MarkAppStateDirty();
-        RefreshPlaylistList(playlistListView, playlists);
+        RefreshPlaylistList(playlistListView);
         RefreshSelectedTrackList();
         return;
     }
@@ -1883,7 +2079,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         InsertColumn(trackListView, 3, L"Comment", trackColumnWidths[3]);
         InsertColumn(trackListView, 4, L"Duration", trackColumnWidths[4]);
         InsertColumn(trackListView, 5, L"Path", trackColumnWidths[5]);
-        RefreshPlaylistList(playlistListView, playlists);
+        RefreshPlaylistList(playlistListView);
         RefreshSelectedTrackList();
         DragAcceptFiles(window, TRUE);
         SetTimer(window, AppStateTimerId, AppStateTimerIntervalMs, nullptr);
@@ -1986,17 +2182,18 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         if (header->code == LVN_ITEMCHANGED && !isRefreshingPlaylistList)
         {
             NMLISTVIEW* change = reinterpret_cast<NMLISTVIEW*>(lParam);
+            const int playlistIndex =
+                GetPlaylistIndexFromVisibleRow(change->iItem);
             const bool becameSelected =
                 (change->uChanged & LVIF_STATE) != 0 &&
                 (change->uNewState & LVIS_SELECTED) != 0 &&
                 (change->uOldState & LVIS_SELECTED) == 0 &&
-                change->iItem >= 0 &&
-                change->iItem < static_cast<int>(playlists.size());
+                playlistIndex >= 0;
             if (becameSelected)
             {
-                if (selectedPlaylistIndex != change->iItem)
+                if (selectedPlaylistIndex != playlistIndex)
                 {
-                    selectedPlaylistIndex = change->iItem;
+                    selectedPlaylistIndex = playlistIndex;
                     MarkAppStateDirty();
                 }
                 RefreshSelectedTrackList();
@@ -2007,14 +2204,15 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         if (header->code == LVN_ENDLABELEDITW)
         {
             NMLVDISPINFOW* edit = reinterpret_cast<NMLVDISPINFOW*>(lParam);
-            if (edit->item.iItem >= 0 && edit->item.pszText != nullptr &&
-                edit->item.iItem < static_cast<int>(playlists.size()) &&
+            const int playlistIndex =
+                GetPlaylistIndexFromVisibleRow(edit->item.iItem);
+            if (playlistIndex >= 0 && edit->item.pszText != nullptr &&
                 HasVisibleName(edit->item.pszText))
             {
-                selectedPlaylistIndex = edit->item.iItem;
-                playlists[static_cast<std::size_t>(edit->item.iItem)].name =
+                selectedPlaylistIndex = playlistIndex;
+                playlists[static_cast<std::size_t>(playlistIndex)].name =
                     edit->item.pszText;
-                playlists[static_cast<std::size_t>(edit->item.iItem)].isModified =
+                playlists[static_cast<std::size_t>(playlistIndex)].isModified =
                     true;
                 MarkAppStateDirty();
                 PostMessageW(window, MessageRefreshPlaylistList, 0, 0);
@@ -2022,14 +2220,47 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             return FALSE;
         }
 
+        if (header->code == LVN_BEGINLABELEDITW)
+        {
+            const NMLVDISPINFOW* edit =
+                reinterpret_cast<NMLVDISPINFOW*>(lParam);
+            const int playlistIndex =
+                GetPlaylistIndexFromVisibleRow(edit->item.iItem);
+            if (playlistIndex < 0)
+            {
+                return TRUE;
+            }
+            PostMessageW(window, MessagePreparePlaylistLabelEdit,
+                         static_cast<WPARAM>(playlistIndex), 0);
+            return FALSE;
+        }
+
+        if (header->code == NM_CLICK)
+        {
+            const NMITEMACTIVATE* click =
+                reinterpret_cast<NMITEMACTIVATE*>(lParam);
+            const int groupIndex = GetGroupIndexFromVisibleRow(click->iItem);
+            if (groupIndex >= 0 &&
+                groupIndex < static_cast<int>(playlistGroups.size()))
+            {
+                PostMessageW(window, MessageTogglePlaylistGroup,
+                             static_cast<WPARAM>(groupIndex), 0);
+            }
+            return 0;
+        }
+
         if (header->code == LVN_KEYDOWN)
         {
             NMLVKEYDOWN* key = reinterpret_cast<NMLVKEYDOWN*>(lParam);
-            if (key->wVKey == VK_F2)
+            const int focusedRow = ListView_GetNextItem(
+                playlistListView, -1, LVNI_FOCUSED);
+            const bool playlistRowFocused =
+                GetPlaylistIndexFromVisibleRow(focusedRow) >= 0;
+            if (key->wVKey == VK_F2 && playlistRowFocused)
             {
                 RenameSelectedPlaylist();
             }
-            else if (key->wVKey == VK_DELETE)
+            else if (key->wVKey == VK_DELETE && playlistRowFocused)
             {
                 DeleteSelectedPlaylist(window);
             }
@@ -2039,8 +2270,38 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
     }
 
     case MessageRefreshPlaylistList:
-        RefreshPlaylistList(playlistListView, playlists);
+        RefreshPlaylistList(playlistListView);
         return 0;
+
+    case MessagePreparePlaylistLabelEdit:
+    {
+        const int playlistIndex = static_cast<int>(wParam);
+        const HWND editControl = ListView_GetEditControl(playlistListView);
+        if (editControl != nullptr && playlistIndex >= 0 &&
+            playlistIndex < static_cast<int>(playlists.size()))
+        {
+            SetWindowTextW(
+                editControl,
+                playlists[static_cast<std::size_t>(playlistIndex)].name.c_str());
+            SendMessageW(editControl, EM_SETSEL, 0, -1);
+        }
+        return 0;
+    }
+
+    case MessageTogglePlaylistGroup:
+    {
+        const int groupIndex = static_cast<int>(wParam);
+        if (groupIndex >= 0 &&
+            groupIndex < static_cast<int>(playlistGroups.size()))
+        {
+            PlaylistGroup& group =
+                playlistGroups[static_cast<std::size_t>(groupIndex)];
+            group.expanded = !group.expanded;
+            MarkAppStateDirty();
+            RefreshPlaylistList(playlistListView);
+        }
+        return 0;
+    }
 
     case WM_CONTEXTMENU:
         ResetListTooltip(playlistTooltipState);
