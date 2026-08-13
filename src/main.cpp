@@ -56,6 +56,7 @@ constexpr int OrganizerNewGroupButtonId = 2003;
 constexpr int OrganizerCloseButtonId = 2004;
 constexpr UINT OrganizerCommandNewGroup = 2101;
 constexpr UINT OrganizerCommandRenameGroup = 2102;
+constexpr UINT OrganizerCommandDeleteGroup = 2103;
 constexpr UINT OrganizerMoveToGroupCommandBase = 22000;
 
 HWND mainWindow = nullptr;
@@ -73,6 +74,7 @@ HWND organizerPlaylistList = nullptr;
 HWND organizerNewGroupButton = nullptr;
 HWND organizerCloseButton = nullptr;
 int selectedOrganizerGroupIndex = 0;
+int organizerContextGroupId = -1;
 bool isRefreshingOrganizerGroups = false;
 std::vector<int> organizerVisiblePlaylistIndices;
 std::vector<int> organizerMoveMenuGroupIds;
@@ -2163,6 +2165,74 @@ void CreateOrganizerGroup()
     BeginOrganizerGroupRename();
 }
 
+bool IsPlaylistGroupEmpty(int groupId)
+{
+    return std::none_of(
+        playlists.begin(), playlists.end(),
+        [groupId](const Playlist& playlist)
+        {
+            return playlist.groupId == groupId;
+        });
+}
+
+bool CanDeletePlaylistGroup(int groupId)
+{
+    return groupId != NewPlaylistGroupId &&
+        FindPlaylistGroupById(playlistGroups, groupId) != nullptr &&
+        IsPlaylistGroupEmpty(groupId);
+}
+
+bool DeletePlaylistGroup(int groupId)
+{
+    if (!CanDeletePlaylistGroup(groupId))
+    {
+        return false;
+    }
+
+    const auto group = std::find_if(
+        playlistGroups.begin(), playlistGroups.end(),
+        [groupId](const PlaylistGroup& candidate)
+        {
+            return candidate.id == groupId;
+        });
+    if (group == playlistGroups.end())
+    {
+        return false;
+    }
+
+    const std::size_t erasedIndex = static_cast<std::size_t>(
+        std::distance(playlistGroups.begin(), group));
+    playlistGroups.erase(group);
+    selectedOrganizerGroupIndex = static_cast<int>(std::min(
+        erasedIndex, playlistGroups.size() - 1));
+    MarkAppStateDirty();
+    RefreshOrganizerGroupList();
+    SetFocus(organizerGroupList);
+    return true;
+}
+
+void ConfirmAndDeleteOrganizerGroup(HWND window, int groupId)
+{
+    if (!CanDeletePlaylistGroup(groupId))
+    {
+        return;
+    }
+    const PlaylistGroup* group =
+        FindPlaylistGroupById(playlistGroups, groupId);
+    if (group == nullptr)
+    {
+        return;
+    }
+
+    const std::wstring message =
+        L"Delete group \"" + group->name + L"\"?";
+    if (MessageBoxW(window, message.c_str(), L"Playlist Organizer",
+                    MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
+    {
+        DeletePlaylistGroup(groupId);
+    }
+}
+
 bool MoveOrganizerGroup(int direction)
 {
     if ((direction != -1 && direction != 1) ||
@@ -2407,6 +2477,7 @@ bool MoveOrganizerPlaylists(int direction)
 void ShowOrganizerGroupContextMenu(HWND window, LPARAM lParam)
 {
     POINT screenPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+    organizerContextGroupId = -1;
     if (screenPoint.x != -1 || screenPoint.y != -1)
     {
         POINT clientPoint = screenPoint;
@@ -2417,6 +2488,8 @@ void ShowOrganizerGroupContextMenu(HWND window, LPARAM lParam)
         if (row >= 0)
         {
             SelectOrganizerGroup(row);
+            organizerContextGroupId = playlistGroups[
+                static_cast<std::size_t>(row)].id;
         }
     }
     else
@@ -2428,6 +2501,8 @@ void ShowOrganizerGroupContextMenu(HWND window, LPARAM lParam)
         {
             screenPoint = {itemRect.left, itemRect.bottom};
             ClientToScreen(organizerGroupList, &screenPoint);
+            organizerContextGroupId = playlistGroups[
+                static_cast<std::size_t>(selectedOrganizerGroupIndex)].id;
         }
     }
     if (screenPoint.x == -1 && screenPoint.y == -1)
@@ -2441,10 +2516,16 @@ void ShowOrganizerGroupContextMenu(HWND window, LPARAM lParam)
         return;
     }
     AppendMenuW(menu, MF_STRING, OrganizerCommandNewGroup, L"New Group");
+    const bool canRename = organizerContextGroupId != -1 &&
+        organizerContextGroupId != NewPlaylistGroupId;
     AppendMenuW(menu,
-                MF_STRING | (selectedOrganizerGroupIndex == 0
+                MF_STRING | (!canRename
                     ? MF_GRAYED : MF_ENABLED),
                 OrganizerCommandRenameGroup, L"Rename Group");
+    AppendMenuW(menu,
+                MF_STRING | (CanDeletePlaylistGroup(organizerContextGroupId)
+                    ? MF_ENABLED : MF_GRAYED),
+                OrganizerCommandDeleteGroup, L"Delete Group");
     const UINT command = TrackPopupMenu(
         menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
         screenPoint.x, screenPoint.y, 0, window, nullptr);
@@ -2664,6 +2745,9 @@ LRESULT CALLBACK PlaylistOrganizerWindowProcedure(
             return 0;
         case OrganizerCommandRenameGroup:
             BeginOrganizerGroupRename();
+            return 0;
+        case OrganizerCommandDeleteGroup:
+            ConfirmAndDeleteOrganizerGroup(window, organizerContextGroupId);
             return 0;
         case OrganizerCloseButtonId:
             SendMessageW(window, WM_CLOSE, 0, 0);
