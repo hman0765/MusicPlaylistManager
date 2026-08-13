@@ -454,3 +454,163 @@ void AddTrack(Playlist& playlist, Track track)
     playlist.tracks.push_back(std::move(track));
     playlist.isModified = true;
 }
+
+namespace
+{
+bool HasVisibleGroupName(const std::wstring& name)
+{
+    return std::any_of(name.begin(), name.end(), [](wchar_t character) {
+        return std::iswspace(character) == 0;
+    });
+}
+
+bool EqualGroupNames(const std::wstring& left, const std::wstring& right)
+{
+    return left.size() == right.size() &&
+        std::equal(left.begin(), left.end(), right.begin(),
+                   [](wchar_t first, wchar_t second) {
+                       return std::towlower(first) == std::towlower(second);
+                   });
+}
+}
+
+PlaylistGroup* FindPlaylistGroupById(
+    std::vector<PlaylistGroup>& groups, int groupId)
+{
+    const auto found = std::find_if(
+        groups.begin(), groups.end(), [groupId](const PlaylistGroup& group) {
+            return group.id == groupId;
+        });
+    return found == groups.end() ? nullptr : &*found;
+}
+
+const PlaylistGroup* FindPlaylistGroupById(
+    const std::vector<PlaylistGroup>& groups, int groupId)
+{
+    const auto found = std::find_if(
+        groups.begin(), groups.end(), [groupId](const PlaylistGroup& group) {
+            return group.id == groupId;
+        });
+    return found == groups.end() ? nullptr : &*found;
+}
+
+bool IsPlaylistGroupNameAvailable(
+    const std::vector<PlaylistGroup>& groups, const std::wstring& name)
+{
+    if (!HasVisibleGroupName(name) || EqualGroupNames(name, L"New"))
+    {
+        return false;
+    }
+    return std::none_of(
+        groups.begin(), groups.end(), [&name](const PlaylistGroup& group) {
+            return EqualGroupNames(group.name, name);
+        });
+}
+
+std::wstring GenerateNewGroupName(
+    const std::vector<PlaylistGroup>& groups)
+{
+    const std::wstring baseName = L"New Group";
+    if (IsPlaylistGroupNameAvailable(groups, baseName))
+    {
+        return baseName;
+    }
+    for (int number = 2;; ++number)
+    {
+        const std::wstring candidate =
+            baseName + L" " + std::to_wstring(number);
+        if (IsPlaylistGroupNameAvailable(groups, candidate))
+        {
+            return candidate;
+        }
+    }
+}
+
+int CreatePlaylistGroup(std::vector<PlaylistGroup>& groups,
+                        int& nextGroupId, const std::wstring& name)
+{
+    if (!IsPlaylistGroupNameAvailable(groups, name))
+    {
+        return -1;
+    }
+    nextGroupId = std::max(nextGroupId, 1);
+    while (FindPlaylistGroupById(groups, nextGroupId) != nullptr)
+    {
+        ++nextGroupId;
+    }
+    const int newId = nextGroupId++;
+    groups.push_back({newId, name, true});
+    return newId;
+}
+
+void NormalizePlaylistGroups(std::vector<PlaylistGroup>& groups,
+                             std::vector<Playlist>& playlists,
+                             int& nextGroupId)
+{
+    auto newGroup = std::find_if(
+        groups.begin(), groups.end(), [](const PlaylistGroup& group) {
+            return group.id == NewPlaylistGroupId;
+        });
+    if (newGroup == groups.end())
+    {
+        groups.insert(groups.begin(),
+                      {NewPlaylistGroupId, L"New", true});
+    }
+    else
+    {
+        newGroup->name = L"New";
+        if (newGroup != groups.begin())
+        {
+            std::rotate(groups.begin(), newGroup, newGroup + 1);
+        }
+    }
+
+    // Repair duplicate or reserved IDs without tying identity to vector order.
+    int availableId = 1;
+    for (std::size_t index = 1; index < groups.size(); ++index)
+    {
+        PlaylistGroup& group = groups[index];
+        const bool duplicateId = std::any_of(
+            groups.begin(), groups.begin() + static_cast<std::ptrdiff_t>(index),
+            [&group](const PlaylistGroup& previous) {
+                return previous.id == group.id;
+            });
+        if (group.id <= NewPlaylistGroupId || duplicateId)
+        {
+            while (FindPlaylistGroupById(groups, availableId) != nullptr)
+            {
+                ++availableId;
+            }
+            group.id = availableId++;
+        }
+    }
+
+    std::vector<PlaylistGroup> groupsWithValidNames;
+    groupsWithValidNames.reserve(groups.size());
+    groupsWithValidNames.push_back(groups.front());
+    for (std::size_t index = 1; index < groups.size(); ++index)
+    {
+        PlaylistGroup& group = groups[index];
+        if (!IsPlaylistGroupNameAvailable(groupsWithValidNames, group.name))
+        {
+            group.name = GenerateNewGroupName(groupsWithValidNames);
+        }
+        groupsWithValidNames.push_back(group);
+    }
+
+    nextGroupId = 1;
+    for (const PlaylistGroup& group : groups)
+    {
+        if (group.id >= nextGroupId)
+        {
+            nextGroupId = group.id + 1;
+        }
+    }
+    for (Playlist& playlist : playlists)
+    {
+        if (FindPlaylistGroupById(groups, playlist.groupId) == nullptr)
+        {
+            playlist.groupId = NewPlaylistGroupId;
+        }
+    }
+}

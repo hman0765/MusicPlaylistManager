@@ -6,6 +6,15 @@
 #include <utility>
 #include <vector>
 
+inline constexpr int NewPlaylistGroupId = 0;
+
+struct PlaylistGroup
+{
+    int id = -1;
+    std::wstring name;
+    bool expanded = true;
+};
+
 template <typename T>
 std::size_t MoveVectorItem(std::vector<T>& items,
                            std::size_t fromIndex,
@@ -67,6 +76,7 @@ struct Playlist
 {
     std::wstring name;
     std::wstring filePath;
+    int groupId = NewPlaylistGroupId;
     std::vector<Track> tracks;
     bool isModified = false;
 };
@@ -81,3 +91,17 @@ std::wstring BuildExtinfText(const Track& track);
 int GetExportDuration(const Track& track);
 std::wstring FormatDuration(int seconds);
 void AddTrack(Playlist& playlist, Track track);
+
+PlaylistGroup* FindPlaylistGroupById(
+    std::vector<PlaylistGroup>& groups, int groupId);
+const PlaylistGroup* FindPlaylistGroupById(
+    const std::vector<PlaylistGroup>& groups, int groupId);
+bool IsPlaylistGroupNameAvailable(
+    const std::vector<PlaylistGroup>& groups, const std::wstring& name);
+std::wstring GenerateNewGroupName(
+    const std::vector<PlaylistGroup>& groups);
+int CreatePlaylistGroup(std::vector<PlaylistGroup>& groups,
+                        int& nextGroupId, const std::wstring& name);
+void NormalizePlaylistGroups(std::vector<PlaylistGroup>& groups,
+                             std::vector<Playlist>& playlists,
+                             int& nextGroupId);

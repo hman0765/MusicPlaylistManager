@@ -13,7 +13,10 @@ inline constexpr std::array<int, TrackColumnCount> DefaultTrackColumnWidths = {
 
 struct AppState
 {
-    int version = 1;
+    int version = 2;
+    std::vector<PlaylistGroup> playlistGroups{
+        {NewPlaylistGroupId, L"New", true}
+    };
     std::vector<Playlist> playlists;
     int selectedPlaylistIndex = -1;
     int splitterX = 240;

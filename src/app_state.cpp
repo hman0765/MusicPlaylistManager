@@ -169,6 +169,9 @@ void AppendPlaylistJson(std::wstring& output, const Playlist& playlist,
     AppendJsonString(output, playlist.filePath);
     output += L",\n";
     AppendIndent(output, indent + 1);
+    output += L"\"groupId\": " + std::to_wstring(playlist.groupId) +
+              L",\n";
+    AppendIndent(output, indent + 1);
     output += L"\"isModified\": ";
     output += playlist.isModified ? L"true,\n" : L"false,\n";
     AppendIndent(output, indent + 1);
@@ -185,6 +188,23 @@ void AppendPlaylistJson(std::wstring& output, const Playlist& playlist,
         AppendIndent(output, indent + 1);
     }
     output += L"]\n";
+    AppendIndent(output, indent);
+    output += L"}";
+}
+
+void AppendPlaylistGroupJson(std::wstring& output,
+                             const PlaylistGroup& group, int indent)
+{
+    output += L"{\n";
+    AppendIndent(output, indent + 1);
+    output += L"\"id\": " + std::to_wstring(group.id) + L",\n";
+    AppendIndent(output, indent + 1);
+    output += L"\"name\": ";
+    AppendJsonString(output, group.name);
+    output += L",\n";
+    AppendIndent(output, indent + 1);
+    output += L"\"expanded\": ";
+    output += group.expanded ? L"true\n" : L"false\n";
     AppendIndent(output, indent);
     output += L"}";
 }
@@ -214,6 +234,21 @@ std::wstring SerializeState(const AppState& state)
     }
     output += L"]\n";
     output += L"  },\n";
+    output += L"  \"groups\": [";
+    if (!state.playlistGroups.empty())
+    {
+        output += L"\n";
+        for (std::size_t index = 0; index < state.playlistGroups.size();
+             ++index)
+        {
+            output += L"    ";
+            AppendPlaylistGroupJson(output, state.playlistGroups[index], 2);
+            output += index + 1 < state.playlistGroups.size()
+                ? L",\n" : L"\n";
+        }
+        output += L"  ";
+    }
+    output += L"],\n";
     output += L"  \"playlists\": [";
     if (!state.playlists.empty())
     {
@@ -578,6 +613,7 @@ Playlist ReadPlaylist(JsonReader& reader)
     reader.ReadObject([&](const std::wstring& name) {
         if (name == L"name") { playlist.name = reader.ReadString(); fields |= 1U << 0; }
         else if (name == L"filePath") { playlist.filePath = reader.ReadString(); fields |= 1U << 1; }
+        else if (name == L"groupId") { playlist.groupId = ReadInt(reader); }
         else if (name == L"isModified") { playlist.isModified = reader.ReadBoolean(); }
         else if (name == L"tracks")
         {
@@ -591,6 +627,23 @@ Playlist ReadPlaylist(JsonReader& reader)
         throw std::runtime_error("Playlist state is incomplete.");
     }
     return playlist;
+}
+
+PlaylistGroup ReadPlaylistGroup(JsonReader& reader)
+{
+    PlaylistGroup group{};
+    unsigned int fields = 0;
+    reader.ReadObject([&](const std::wstring& name) {
+        if (name == L"id") { group.id = ReadInt(reader); fields |= 1U << 0; }
+        else if (name == L"name") { group.name = reader.ReadString(); fields |= 1U << 1; }
+        else if (name == L"expanded") { group.expanded = reader.ReadBoolean(); fields |= 1U << 2; }
+        else reader.SkipValue();
+    });
+    if (fields != 0x07U)
+    {
+        throw std::runtime_error("Playlist group state is incomplete.");
+    }
+    return group;
 }
 
 void ReadGui(JsonReader& reader, AppState& state)
@@ -649,11 +702,19 @@ AppState DeserializeState(const std::wstring& text)
 {
     JsonReader reader(text);
     AppState state{};
+    state.playlistGroups.clear();
     unsigned int fields = 0;
     reader.ReadObject([&](const std::wstring& name) {
         if (name == L"version") { state.version = ReadInt(reader); fields |= 1U << 0; }
         else if (name == L"selectedPlaylistIndex") { state.selectedPlaylistIndex = ReadInt(reader); fields |= 1U << 1; }
         else if (name == L"gui") { ReadGui(reader, state); fields |= 1U << 2; }
+        else if (name == L"groups")
+        {
+            reader.ReadArray([&]() {
+                state.playlistGroups.push_back(ReadPlaylistGroup(reader));
+            });
+            fields |= 1U << 4;
+        }
         else if (name == L"playlists")
         {
             reader.ReadArray([&]() { state.playlists.push_back(ReadPlaylist(reader)); });
@@ -662,10 +723,19 @@ AppState DeserializeState(const std::wstring& text)
         else reader.SkipValue();
     });
     reader.EnsureEnd();
-    if (fields != 0x0FU || state.version != 1)
+    const bool hasLegacyFields = (fields & 0x0FU) == 0x0FU;
+    const bool supportedVersion = state.version == 1 || state.version == 2;
+    const bool hasVersionTwoGroups =
+        state.version != 2 || (fields & (1U << 4)) != 0;
+    if (!hasLegacyFields || !supportedVersion || !hasVersionTwoGroups)
     {
         throw std::runtime_error("Unsupported or incomplete state file.");
     }
+
+    int nextGroupId = 1;
+    NormalizePlaylistGroups(state.playlistGroups, state.playlists,
+                            nextGroupId);
+    state.version = 2;
 
     state.windowWidth = std::clamp(state.windowWidth, 360, 16384);
     state.windowHeight = std::clamp(state.windowHeight, 240, 16384);

@@ -70,7 +70,13 @@ int splitterDragOffset = 0;
 int splitterXAtDragStart = 240;
 bool oleDragDropAvailable = false;
 
-std::vector<Playlist> playlists{{L"New Playlist", L"", {}, false}};
+std::vector<PlaylistGroup> playlistGroups{
+    {NewPlaylistGroupId, L"New", true}
+};
+int nextGroupId = 1;
+std::vector<Playlist> playlists{
+    {L"New Playlist", L"", NewPlaylistGroupId, {}, false}
+};
 int selectedPlaylistIndex = 0;
 bool isRefreshingPlaylistList = false;
 bool isRefreshingTrackList = false;
@@ -104,6 +110,7 @@ void MarkAppStateDirty()
 AppState CaptureCurrentAppState()
 {
     AppState state{};
+    state.playlistGroups = playlistGroups;
     state.playlists = playlists;
     state.selectedPlaylistIndex = selectedPlaylistIndex;
     state.splitterX = splitterX;
@@ -157,7 +164,9 @@ bool SaveCurrentAppState()
 
 void ApplyLoadedAppState(AppState state)
 {
+    playlistGroups = std::move(state.playlistGroups);
     playlists = std::move(state.playlists);
+    NormalizePlaylistGroups(playlistGroups, playlists, nextGroupId);
     selectedPlaylistIndex = state.selectedPlaylistIndex;
     splitterX = state.splitterX;
     savedWindowX = state.windowX;
@@ -170,7 +179,9 @@ void ApplyLoadedAppState(AppState state)
 
 void ResetToDefaultAppState()
 {
-    playlists = {{L"New Playlist", L"", {}, false}};
+    playlistGroups = {{NewPlaylistGroupId, L"New", true}};
+    nextGroupId = 1;
+    playlists = {{L"New Playlist", L"", NewPlaylistGroupId, {}, false}};
     selectedPlaylistIndex = 0;
     splitterX = 240;
     savedWindowX = 0;
@@ -1199,7 +1210,8 @@ std::wstring MakeNewPlaylistName()
 
 void CreateNewPlaylist()
 {
-    playlists.push_back(Playlist{MakeNewPlaylistName(), L"", {}, false});
+    playlists.push_back(Playlist{MakeNewPlaylistName(), L"",
+                                 NewPlaylistGroupId, {}, false});
     selectedPlaylistIndex = static_cast<int>(playlists.size()) - 1;
     MarkAppStateDirty();
     RefreshPlaylistList(playlistListView, playlists);
