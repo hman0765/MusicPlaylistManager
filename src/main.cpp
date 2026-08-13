@@ -26,6 +26,8 @@
 namespace
 {
 constexpr wchar_t WindowClassName[] = L"MusicPlaylistManagerWindow";
+constexpr wchar_t OrganizerWindowClassName[] =
+    L"MusicPlaylistManagerOrganizerWindow";
 constexpr wchar_t WindowTitle[] = L"Music Playlist Manager";
 constexpr int SplitterWidth = 6;
 constexpr int MinimumPaneWidth = 120;
@@ -42,11 +44,18 @@ constexpr UINT CommandShowTrackProperties = 1008;
 constexpr UINT CommandOpenAudioFiles = 1009;
 constexpr UINT CommandImportPlaylist = 1010;
 constexpr UINT CommandExit = 1011;
+constexpr UINT CommandOrganizePlaylists = 1012;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
 constexpr UINT MessagePreparePlaylistLabelEdit = WM_APP + 2;
 constexpr UINT MessageTogglePlaylistGroup = WM_APP + 3;
 constexpr UINT_PTR AppStateTimerId = 1;
 constexpr UINT AppStateTimerIntervalMs = 60'000;
+constexpr int OrganizerGroupListId = 2001;
+constexpr int OrganizerPlaylistListId = 2002;
+constexpr int OrganizerNewGroupButtonId = 2003;
+constexpr int OrganizerCloseButtonId = 2004;
+constexpr UINT OrganizerCommandNewGroup = 2101;
+constexpr UINT OrganizerCommandRenameGroup = 2102;
 
 HWND mainWindow = nullptr;
 HWND playlistListView = nullptr;
@@ -57,6 +66,14 @@ HWND trackTooltip = nullptr;
 HMENU fileMenu = nullptr;
 HMENU playlistMenu = nullptr;
 HMENU trackMenu = nullptr;
+HWND organizerWindow = nullptr;
+HWND organizerGroupList = nullptr;
+HWND organizerPlaylistList = nullptr;
+HWND organizerNewGroupButton = nullptr;
+HWND organizerCloseButton = nullptr;
+int selectedOrganizerGroupIndex = 0;
+bool isRefreshingOrganizerGroups = false;
+std::vector<int> organizerVisiblePlaylistIndices;
 HFONT statusFont = nullptr;
 int statusHeight = 32;
 int splitterX = 240;
@@ -115,6 +132,9 @@ constexpr UINT_PTR PlaylistTooltipSubclassId = 1;
 constexpr UINT_PTR TrackTooltipSubclassId = 2;
 
 void ResetListTooltip(ListTooltipState& state);
+void ShowPlaylistOrganizer(HWND owner);
+LRESULT CALLBACK PlaylistOrganizerWindowProcedure(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
 void MarkAppStateDirty()
 {
@@ -975,6 +995,9 @@ bool CreateMainMenuBar(HWND window)
                 L"Rename Playlist");
     AppendMenuW(playlistMenu, MF_STRING, CommandDeletePlaylist,
                 L"Delete Playlist");
+    AppendMenuW(playlistMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(playlistMenu, MF_STRING, CommandOrganizePlaylists,
+                L"Organize Playlists...");
 
     AppendMenuW(trackMenu, MF_STRING, CommandGetTrackMetadata,
                 L"Get Metadata");
@@ -2022,6 +2045,576 @@ void HandleDroppedFiles(HWND window, HDROP drop)
     DragFinish(drop);
 }
 
+void RefreshOrganizerPlaylistList(
+    const std::vector<int>& rowsToSelect = {})
+{
+    if (organizerPlaylistList == nullptr)
+    {
+        return;
+    }
+    ListView_DeleteAllItems(organizerPlaylistList);
+    organizerVisiblePlaylistIndices.clear();
+    if (selectedOrganizerGroupIndex < 0 ||
+        selectedOrganizerGroupIndex >=
+            static_cast<int>(playlistGroups.size()))
+    {
+        return;
+    }
+
+    const int groupId = playlistGroups[
+        static_cast<std::size_t>(selectedOrganizerGroupIndex)].id;
+    for (std::size_t playlistIndex = 0;
+         playlistIndex < playlists.size(); ++playlistIndex)
+    {
+        if (playlists[playlistIndex].groupId != groupId)
+        {
+            continue;
+        }
+        organizerVisiblePlaylistIndices.push_back(
+            static_cast<int>(playlistIndex));
+        InsertListItem(organizerPlaylistList,
+                       static_cast<int>(organizerVisiblePlaylistIndices.size()) - 1,
+                       playlists[playlistIndex].name);
+    }
+    for (const int row : rowsToSelect)
+    {
+        if (row >= 0 &&
+            row < static_cast<int>(organizerVisiblePlaylistIndices.size()))
+        {
+            ListView_SetItemState(organizerPlaylistList, row,
+                                  LVIS_SELECTED | LVIS_FOCUSED,
+                                  LVIS_SELECTED | LVIS_FOCUSED);
+        }
+    }
+}
+
+void RefreshOrganizerGroupList()
+{
+    if (organizerGroupList == nullptr)
+    {
+        return;
+    }
+    selectedOrganizerGroupIndex = std::clamp(
+        selectedOrganizerGroupIndex, 0,
+        std::max(0, static_cast<int>(playlistGroups.size()) - 1));
+    isRefreshingOrganizerGroups = true;
+    ListView_DeleteAllItems(organizerGroupList);
+    for (std::size_t index = 0; index < playlistGroups.size(); ++index)
+    {
+        InsertListItem(organizerGroupList, static_cast<int>(index),
+                       playlistGroups[index].name);
+    }
+    if (!playlistGroups.empty())
+    {
+        ListView_SetItemState(organizerGroupList,
+                              selectedOrganizerGroupIndex,
+                              LVIS_SELECTED | LVIS_FOCUSED,
+                              LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(organizerGroupList,
+                               selectedOrganizerGroupIndex, FALSE);
+    }
+    isRefreshingOrganizerGroups = false;
+    RefreshOrganizerPlaylistList();
+}
+
+void SelectOrganizerGroup(int groupIndex)
+{
+    if (groupIndex < 0 ||
+        groupIndex >= static_cast<int>(playlistGroups.size()))
+    {
+        return;
+    }
+    selectedOrganizerGroupIndex = groupIndex;
+    ListView_SetItemState(organizerGroupList, -1, 0,
+                          LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_SetItemState(organizerGroupList, groupIndex,
+                          LVIS_SELECTED | LVIS_FOCUSED,
+                          LVIS_SELECTED | LVIS_FOCUSED);
+    RefreshOrganizerPlaylistList();
+}
+
+void BeginOrganizerGroupRename()
+{
+    if (selectedOrganizerGroupIndex <= 0 ||
+        selectedOrganizerGroupIndex >=
+            static_cast<int>(playlistGroups.size()))
+    {
+        return;
+    }
+    SetFocus(organizerGroupList);
+    ListView_EditLabel(organizerGroupList, selectedOrganizerGroupIndex);
+}
+
+void CreateOrganizerGroup()
+{
+    const std::wstring name = GenerateNewGroupName(playlistGroups);
+    const int groupId = CreatePlaylistGroup(
+        playlistGroups, nextGroupId, name);
+    if (groupId < 0)
+    {
+        return;
+    }
+    selectedOrganizerGroupIndex =
+        static_cast<int>(playlistGroups.size()) - 1;
+    MarkAppStateDirty();
+    RefreshOrganizerGroupList();
+    BeginOrganizerGroupRename();
+}
+
+bool MoveOrganizerGroup(int direction)
+{
+    if ((direction != -1 && direction != 1) ||
+        selectedOrganizerGroupIndex <= 0 ||
+        selectedOrganizerGroupIndex >=
+            static_cast<int>(playlistGroups.size()))
+    {
+        return false;
+    }
+    const int destination = selectedOrganizerGroupIndex + direction;
+    if (destination <= 0 ||
+        destination >= static_cast<int>(playlistGroups.size()))
+    {
+        return false;
+    }
+    std::swap(playlistGroups[
+                  static_cast<std::size_t>(selectedOrganizerGroupIndex)],
+              playlistGroups[static_cast<std::size_t>(destination)]);
+    selectedOrganizerGroupIndex = destination;
+    MarkAppStateDirty();
+    RefreshOrganizerGroupList();
+    SetFocus(organizerGroupList);
+    return true;
+}
+
+std::vector<int> GetSelectedOrganizerPlaylistRows()
+{
+    std::vector<int> rows;
+    int row = -1;
+    while ((row = ListView_GetNextItem(
+                organizerPlaylistList, row, LVNI_SELECTED)) != -1)
+    {
+        rows.push_back(row);
+    }
+    return rows;
+}
+
+bool MoveOrganizerPlaylists(int direction)
+{
+    const std::vector<int> selectedRows =
+        GetSelectedOrganizerPlaylistRows();
+    if ((direction != -1 && direction != 1) ||
+        !AreIndicesContiguous(selectedRows))
+    {
+        return false;
+    }
+    const int first = selectedRows.front();
+    const int last = selectedRows.back();
+    const int count =
+        static_cast<int>(organizerVisiblePlaylistIndices.size());
+    if ((direction < 0 && first == 0) ||
+        (direction > 0 && last == count - 1) ||
+        first < 0 || last >= count)
+    {
+        return false;
+    }
+
+    std::vector<Playlist> groupPlaylists;
+    groupPlaylists.reserve(organizerVisiblePlaylistIndices.size());
+    int selectedMainOrdinal = -1;
+    for (std::size_t ordinal = 0;
+         ordinal < organizerVisiblePlaylistIndices.size(); ++ordinal)
+    {
+        const int playlistIndex = organizerVisiblePlaylistIndices[ordinal];
+        if (playlistIndex == selectedPlaylistIndex)
+        {
+            selectedMainOrdinal = static_cast<int>(ordinal);
+        }
+        groupPlaylists.push_back(std::move(
+            playlists[static_cast<std::size_t>(playlistIndex)]));
+    }
+
+    if (direction < 0)
+    {
+        std::rotate(groupPlaylists.begin() + first - 1,
+                    groupPlaylists.begin() + first,
+                    groupPlaylists.begin() + last + 1);
+        if (selectedMainOrdinal >= first && selectedMainOrdinal <= last)
+            --selectedMainOrdinal;
+        else if (selectedMainOrdinal == first - 1)
+            selectedMainOrdinal = last;
+    }
+    else
+    {
+        std::rotate(groupPlaylists.begin() + first,
+                    groupPlaylists.begin() + last + 1,
+                    groupPlaylists.begin() + last + 2);
+        if (selectedMainOrdinal >= first && selectedMainOrdinal <= last)
+            ++selectedMainOrdinal;
+        else if (selectedMainOrdinal == last + 1)
+            selectedMainOrdinal = first;
+    }
+
+    for (std::size_t ordinal = 0;
+         ordinal < organizerVisiblePlaylistIndices.size(); ++ordinal)
+    {
+        playlists[static_cast<std::size_t>(
+            organizerVisiblePlaylistIndices[ordinal])] =
+                std::move(groupPlaylists[ordinal]);
+    }
+    if (selectedMainOrdinal >= 0)
+    {
+        selectedPlaylistIndex = organizerVisiblePlaylistIndices[
+            static_cast<std::size_t>(selectedMainOrdinal)];
+    }
+
+    std::vector<int> movedRows = selectedRows;
+    for (int& row : movedRows)
+    {
+        row += direction;
+    }
+    MarkAppStateDirty();
+    RefreshOrganizerPlaylistList(movedRows);
+    SetFocus(organizerPlaylistList);
+    return true;
+}
+
+void ShowOrganizerGroupContextMenu(HWND window, LPARAM lParam)
+{
+    POINT screenPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+    if (screenPoint.x != -1 || screenPoint.y != -1)
+    {
+        POINT clientPoint = screenPoint;
+        ScreenToClient(organizerGroupList, &clientPoint);
+        LVHITTESTINFO hitTest{};
+        hitTest.pt = clientPoint;
+        const int row = ListView_HitTest(organizerGroupList, &hitTest);
+        if (row >= 0)
+        {
+            SelectOrganizerGroup(row);
+        }
+    }
+    else
+    {
+        RECT itemRect{};
+        if (ListView_GetItemRect(organizerGroupList,
+                                 selectedOrganizerGroupIndex,
+                                 &itemRect, LVIR_BOUNDS))
+        {
+            screenPoint = {itemRect.left, itemRect.bottom};
+            ClientToScreen(organizerGroupList, &screenPoint);
+        }
+    }
+    if (screenPoint.x == -1 && screenPoint.y == -1)
+    {
+        GetCursorPos(&screenPoint);
+    }
+
+    HMENU menu = CreatePopupMenu();
+    if (menu == nullptr)
+    {
+        return;
+    }
+    AppendMenuW(menu, MF_STRING, OrganizerCommandNewGroup, L"New Group");
+    AppendMenuW(menu,
+                MF_STRING | (selectedOrganizerGroupIndex == 0
+                    ? MF_GRAYED : MF_ENABLED),
+                OrganizerCommandRenameGroup, L"Rename Group");
+    const UINT command = TrackPopupMenu(
+        menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+        screenPoint.x, screenPoint.y, 0, window, nullptr);
+    DestroyMenu(menu);
+    if (command != 0)
+    {
+        SendMessageW(window, WM_COMMAND, MAKEWPARAM(command, 0), 0);
+    }
+}
+
+void LayoutOrganizerChildren(HWND window)
+{
+    RECT client{};
+    GetClientRect(window, &client);
+    constexpr int margin = 12;
+    constexpr int labelHeight = 20;
+    constexpr int buttonHeight = 30;
+    constexpr int gap = 10;
+    const int width = std::max(
+        0, static_cast<int>(client.right - client.left));
+    const int height = std::max(
+        0, static_cast<int>(client.bottom - client.top));
+    const int leftWidth = std::max(160, (width - margin * 2 - gap) / 3);
+    const int rightX = margin + leftWidth + gap;
+    const int rightWidth = std::max(0, width - rightX - margin);
+    const int listTop = margin + labelHeight;
+    const int listHeight = std::max(
+        0, height - listTop - buttonHeight - margin * 2);
+    MoveWindow(GetDlgItem(window, 2201), margin, margin,
+               leftWidth, labelHeight, TRUE);
+    MoveWindow(GetDlgItem(window, 2202), rightX, margin,
+               rightWidth, labelHeight, TRUE);
+    MoveWindow(organizerGroupList, margin, listTop,
+               leftWidth, listHeight, TRUE);
+    MoveWindow(organizerPlaylistList, rightX, listTop,
+               rightWidth, listHeight, TRUE);
+    MoveWindow(organizerNewGroupButton, margin,
+               height - margin - buttonHeight, 110, buttonHeight, TRUE);
+    MoveWindow(organizerCloseButton,
+               width - margin - 90, height - margin - buttonHeight,
+               90, buttonHeight, TRUE);
+    ListView_SetColumnWidth(organizerGroupList, 0,
+                            std::max(0, leftWidth - 4));
+    ListView_SetColumnWidth(organizerPlaylistList, 0,
+                            std::max(0, rightWidth - 4));
+}
+
+LRESULT CALLBACK PlaylistOrganizerWindowProcedure(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_CREATE:
+    {
+        const HINSTANCE instance = reinterpret_cast<LPCREATESTRUCTW>(
+            lParam)->hInstance;
+        CreateWindowExW(0, WC_STATICW, L"Groups",
+                        WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
+                        window, reinterpret_cast<HMENU>(2201), instance,
+                        nullptr);
+        CreateWindowExW(0, WC_STATICW, L"Playlists",
+                        WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
+                        window, reinterpret_cast<HMENU>(2202), instance,
+                        nullptr);
+        organizerGroupList = CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+            WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL |
+                LVS_SHOWSELALWAYS | LVS_EDITLABELS,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(OrganizerGroupListId), instance, nullptr);
+        organizerPlaylistList = CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+            WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(OrganizerPlaylistListId), instance,
+            nullptr);
+        organizerNewGroupButton = CreateWindowExW(
+            0, WC_BUTTONW, L"New Group", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(OrganizerNewGroupButtonId), instance,
+            nullptr);
+        organizerCloseButton = CreateWindowExW(
+            0, WC_BUTTONW, L"Close",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(OrganizerCloseButtonId), instance,
+            nullptr);
+        if (organizerGroupList == nullptr ||
+            organizerPlaylistList == nullptr ||
+            organizerNewGroupButton == nullptr ||
+            organizerCloseButton == nullptr)
+        {
+            return -1;
+        }
+        ListView_SetExtendedListViewStyle(
+            organizerGroupList, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+        ListView_SetExtendedListViewStyle(
+            organizerPlaylistList,
+            LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+        InsertColumn(organizerGroupList, 0, L"Group", 220);
+        InsertColumn(organizerPlaylistList, 0, L"Playlist", 480);
+        RefreshOrganizerGroupList();
+        return 0;
+    }
+    case WM_SIZE:
+        LayoutOrganizerChildren(window);
+        return 0;
+    case WM_COMMAND:
+        switch (LOWORD(wParam))
+        {
+        case OrganizerNewGroupButtonId:
+        case OrganizerCommandNewGroup:
+            CreateOrganizerGroup();
+            return 0;
+        case OrganizerCommandRenameGroup:
+            BeginOrganizerGroupRename();
+            return 0;
+        case OrganizerCloseButtonId:
+            SendMessageW(window, WM_CLOSE, 0, 0);
+            return 0;
+        }
+        break;
+    case WM_NOTIFY:
+    {
+        NMHDR* header = reinterpret_cast<NMHDR*>(lParam);
+        if (header->hwndFrom != organizerGroupList)
+        {
+            break;
+        }
+        if (header->code == LVN_ITEMCHANGED &&
+            !isRefreshingOrganizerGroups)
+        {
+            const NMLISTVIEW* change =
+                reinterpret_cast<NMLISTVIEW*>(lParam);
+            if ((change->uChanged & LVIF_STATE) != 0 &&
+                (change->uNewState & LVIS_SELECTED) != 0 &&
+                (change->uOldState & LVIS_SELECTED) == 0 &&
+                change->iItem >= 0 &&
+                change->iItem < static_cast<int>(playlistGroups.size()))
+            {
+                selectedOrganizerGroupIndex = change->iItem;
+                RefreshOrganizerPlaylistList();
+            }
+            return 0;
+        }
+        if (header->code == LVN_BEGINLABELEDITW)
+        {
+            const NMLVDISPINFOW* edit =
+                reinterpret_cast<NMLVDISPINFOW*>(lParam);
+            return edit->item.iItem == 0 ? TRUE : FALSE;
+        }
+        if (header->code == LVN_ENDLABELEDITW)
+        {
+            const NMLVDISPINFOW* edit =
+                reinterpret_cast<NMLVDISPINFOW*>(lParam);
+            const int groupIndex = edit->item.iItem;
+            if (groupIndex <= 0 ||
+                groupIndex >= static_cast<int>(playlistGroups.size()) ||
+                edit->item.pszText == nullptr)
+            {
+                return FALSE;
+            }
+            std::vector<PlaylistGroup> otherGroups = playlistGroups;
+            otherGroups.erase(otherGroups.begin() + groupIndex);
+            if (!IsPlaylistGroupNameAvailable(otherGroups,
+                                               edit->item.pszText))
+            {
+                MessageBoxW(window,
+                            L"Group names must be non-empty and unique.",
+                            L"Playlist Organizer",
+                            MB_OK | MB_ICONINFORMATION);
+                return FALSE;
+            }
+            playlistGroups[static_cast<std::size_t>(groupIndex)].name =
+                edit->item.pszText;
+            MarkAppStateDirty();
+            return TRUE;
+        }
+        if (header->code == LVN_KEYDOWN)
+        {
+            const NMLVKEYDOWN* key =
+                reinterpret_cast<NMLVKEYDOWN*>(lParam);
+            if (key->wVKey == VK_F2)
+            {
+                BeginOrganizerGroupRename();
+            }
+            return 0;
+        }
+        break;
+    }
+    case WM_CONTEXTMENU:
+        if (reinterpret_cast<HWND>(wParam) == organizerGroupList)
+        {
+            ShowOrganizerGroupContextMenu(window, lParam);
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        DestroyWindow(window);
+        return 0;
+    case WM_DESTROY:
+        organizerWindow = nullptr;
+        organizerGroupList = nullptr;
+        organizerPlaylistList = nullptr;
+        organizerNewGroupButton = nullptr;
+        organizerCloseButton = nullptr;
+        EnableWindow(mainWindow, TRUE);
+        RefreshPlaylistList(playlistListView);
+        RefreshSelectedTrackList();
+        SetForegroundWindow(mainWindow);
+        return 0;
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+void ShowPlaylistOrganizer(HWND owner)
+{
+    if (!SaveAppState(CaptureCurrentAppState()))
+    {
+        MessageBoxW(owner,
+                    L"The application state could not be saved before "
+                    L"opening the organizer.",
+                    WindowTitle, MB_OK | MB_ICONWARNING);
+    }
+    else
+    {
+        appStateDirty = false;
+    }
+
+    selectedOrganizerGroupIndex = 0;
+    if (const Playlist* selectedPlaylist = GetSelectedPlaylist())
+    {
+        for (std::size_t index = 0; index < playlistGroups.size(); ++index)
+        {
+            if (playlistGroups[index].id == selectedPlaylist->groupId)
+            {
+                selectedOrganizerGroupIndex = static_cast<int>(index);
+                break;
+            }
+        }
+    }
+
+    RECT ownerRect{};
+    GetWindowRect(owner, &ownerRect);
+    constexpr int width = 800;
+    constexpr int height = 500;
+    const int x = ownerRect.left +
+                  ((ownerRect.right - ownerRect.left) - width) / 2;
+    const int y = ownerRect.top +
+                  ((ownerRect.bottom - ownerRect.top) - height) / 2;
+    organizerWindow = CreateWindowExW(
+        WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+        OrganizerWindowClassName, L"Playlist Organizer",
+        WS_OVERLAPPEDWINDOW, x, y, width, height,
+        owner, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (organizerWindow == nullptr)
+    {
+        return;
+    }
+    EnableWindow(owner, FALSE);
+    ShowWindow(organizerWindow, SW_SHOW);
+    UpdateWindow(organizerWindow);
+
+    MSG message{};
+    while (IsWindow(organizerWindow) && GetMessageW(&message, nullptr, 0, 0) > 0)
+    {
+        const bool altArrow =
+            (message.message == WM_KEYDOWN ||
+             message.message == WM_SYSKEYDOWN) &&
+            (message.wParam == VK_UP || message.wParam == VK_DOWN) &&
+            (GetKeyState(VK_MENU) & 0x8000) != 0 &&
+            (GetKeyState(VK_CONTROL) & 0x8000) == 0 &&
+            (GetKeyState(VK_SHIFT) & 0x8000) == 0;
+        if (altArrow)
+        {
+            const int direction = message.wParam == VK_UP ? -1 : 1;
+            const HWND focus = GetFocus();
+            if (focus == organizerGroupList)
+            {
+                MoveOrganizerGroup(direction);
+                continue;
+            }
+            if (focus == organizerPlaylistList)
+            {
+                MoveOrganizerPlaylists(direction);
+                continue;
+            }
+        }
+        if (!IsDialogMessageW(organizerWindow, &message))
+        {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+}
+
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
                                  WPARAM wParam, LPARAM lParam)
 {
@@ -2096,6 +2689,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             return 0;
         case CommandExit:
             SendMessageW(window, WM_CLOSE, 0, 0);
+            return 0;
+        case CommandOrganizePlaylists:
+            ShowPlaylistOrganizer(window);
             return 0;
         case CommandNewPlaylist:
             CreateNewPlaylist();
@@ -2536,6 +3132,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     if (!RegisterClassExW(&windowClass))
     {
         MessageBoxW(nullptr, L"ウインドウクラスの登録に失敗しました。",
+                    WindowTitle, MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
+    WNDCLASSEXW organizerClass = windowClass;
+    organizerClass.lpfnWndProc = PlaylistOrganizerWindowProcedure;
+    organizerClass.lpszClassName = OrganizerWindowClassName;
+    organizerClass.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
+    if (!RegisterClassExW(&organizerClass))
+    {
+        MessageBoxW(nullptr,
+                    L"The Playlist Organizer window class could not be "
+                    L"registered.",
                     WindowTitle, MB_OK | MB_ICONERROR);
         return 1;
     }
