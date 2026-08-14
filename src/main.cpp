@@ -66,6 +66,13 @@ constexpr UINT OrganizerCommandRenameGroup = 2102;
 constexpr UINT OrganizerCommandDeleteGroup = 2103;
 constexpr UINT OrganizerCommandDeletePlaylists = 2104;
 constexpr UINT OrganizerMoveToGroupCommandBase = 22000;
+
+enum class SendToArgumentMode
+{
+    Invalid,
+    Files,
+    Folder
+};
 constexpr int SendToListId = 3001;
 constexpr int SendToAddButtonId = 3002;
 constexpr int SendToEditButtonId = 3003;
@@ -169,7 +176,10 @@ constexpr UINT_PTR PlaylistTooltipSubclassId = 1;
 constexpr UINT_PTR TrackTooltipSubclassId = 2;
 
 void ResetListTooltip(ListTooltipState& state);
+SendToArgumentMode GetSendToArgumentMode(const std::wstring& arguments);
 bool IsValidSendToArguments(const std::wstring& arguments);
+bool CanUseSendToApplication(const SendToApplication& application,
+                             int selectedTrackCount);
 void ShowPlaylistOrganizer(HWND owner);
 void ShowSendToApplications(HWND owner);
 LRESULT CALLBACK PlaylistOrganizerWindowProcedure(
@@ -1012,15 +1022,22 @@ void UpdateMainMenuState()
         {
             DeleteMenu(trackSendToMenu, 0, MF_BYPOSITION);
         }
+        bool canUseAnySendToApplication = false;
+        const int selectedTrackCount = trackListView == nullptr
+            ? 0 : ListView_GetSelectedCount(trackListView);
         for (std::size_t index = 0; index < sendToApplications.size(); ++index)
         {
-            AppendMenuW(trackSendToMenu, MF_STRING,
+            const bool canUse = CanUseSendToApplication(
+                sendToApplications[index], selectedTrackCount);
+            canUseAnySendToApplication |= canUse;
+            AppendMenuW(trackSendToMenu,
+                        MF_STRING | (canUse ? MF_ENABLED : MF_GRAYED),
                         SendToApplicationCommandBase +
                             static_cast<UINT>(index),
                         sendToApplications[index].name.c_str());
         }
         EnableMenuItem(trackMenu, 3, MF_BYPOSITION |
-            (hasTracks && !sendToApplications.empty()
+            (hasTracks && canUseAnySendToApplication
                 ? MF_ENABLED : MF_GRAYED));
     }
 }
@@ -1165,30 +1182,77 @@ bool ExpandSendToArguments(const std::wstring& argumentsTemplate,
                            const std::vector<std::wstring>& paths,
                            std::wstring& expandedArguments)
 {
-    constexpr wchar_t placeholder[] = L"%files%";
-    constexpr std::size_t placeholderLength = 7;
-    const std::wstring fileArguments = BuildSendToFilesArgument(paths);
-    std::size_t searchPosition = 0;
-    std::size_t placeholderPosition =
-        argumentsTemplate.find(placeholder, searchPosition);
-    if (placeholderPosition == std::wstring::npos)
+    const SendToArgumentMode mode =
+        GetSendToArgumentMode(argumentsTemplate);
+    const wchar_t* placeholder = nullptr;
+    std::size_t placeholderLength = 0;
+    std::wstring replacement;
+    if (mode == SendToArgumentMode::Files)
+    {
+        if (paths.empty())
+        {
+            return false;
+        }
+        placeholder = L"%files%";
+        placeholderLength = 7;
+        replacement = BuildSendToFilesArgument(paths);
+    }
+    else if (mode == SendToArgumentMode::Folder)
+    {
+        if (paths.size() != 1)
+        {
+            return false;
+        }
+        placeholder = L"%folder%";
+        placeholderLength = 8;
+        replacement = std::filesystem::path(paths.front())
+                          .parent_path().wstring();
+        if (replacement.empty())
+        {
+            return false;
+        }
+    }
+    else
     {
         return false;
     }
 
-    expandedArguments.clear();
-    while (placeholderPosition != std::wstring::npos)
-    {
-        expandedArguments.append(argumentsTemplate, searchPosition,
-                                 placeholderPosition - searchPosition);
-        expandedArguments += fileArguments;
-        searchPosition = placeholderPosition + placeholderLength;
-        placeholderPosition = argumentsTemplate.find(
-            placeholder, searchPosition);
-    }
-    expandedArguments.append(argumentsTemplate, searchPosition,
-                             std::wstring::npos);
+    const std::size_t placeholderPosition =
+        argumentsTemplate.find(placeholder);
+    expandedArguments = argumentsTemplate;
+    expandedArguments.replace(placeholderPosition, placeholderLength,
+                              replacement);
     return true;
+}
+
+std::wstring GetSelectedTrackParentFolder()
+{
+    const Playlist* playlist = GetSelectedPlaylist();
+    const std::vector<int> selectedIndices =
+        GetSelectedTrackIndices(trackListView);
+    if (playlist == nullptr || selectedIndices.size() != 1)
+    {
+        return L"";
+    }
+    const int trackIndex = selectedIndices.front();
+    if (trackIndex < 0 ||
+        trackIndex >= static_cast<int>(playlist->tracks.size()))
+    {
+        return L"";
+    }
+    const std::wstring& trackPath =
+        playlist->tracks[static_cast<std::size_t>(trackIndex)].path;
+    if (!IsUsableTrackFile(trackPath))
+    {
+        return L"";
+    }
+    const std::filesystem::path folder =
+        std::filesystem::path(trackPath).parent_path();
+    std::error_code error;
+    return !folder.empty() && std::filesystem::is_directory(folder, error) &&
+                   !error
+        ? folder.wstring()
+        : L"";
 }
 
 void ShowSendToFailure(HWND owner, const SendToApplication& application,
@@ -1238,8 +1302,28 @@ bool SendSelectedTracksToApplication(HWND owner, int applicationIndex)
     }
     const SendToApplication application =
         sendToApplications[static_cast<std::size_t>(applicationIndex)];
+    const SendToArgumentMode mode =
+        GetSendToArgumentMode(application.arguments);
+    if (mode == SendToArgumentMode::Invalid)
+    {
+        ShowSendToFailure(
+            owner, application,
+            L"Arguments must contain exactly one of %files% or %folder%.");
+        return false;
+    }
+    const int selectedTrackCount = trackListView == nullptr
+        ? 0 : ListView_GetSelectedCount(trackListView);
+    if (!CanUseSendToApplication(application, selectedTrackCount))
+    {
+        return false;
+    }
     const std::vector<std::wstring> paths = GetSelectedExistingTrackPaths();
     if (paths.empty())
+    {
+        return false;
+    }
+    if (mode == SendToArgumentMode::Folder &&
+        GetSelectedTrackParentFolder().empty())
     {
         return false;
     }
@@ -1251,8 +1335,9 @@ bool SendSelectedTracksToApplication(HWND owner, int applicationIndex)
     }
     if (!IsValidSendToArguments(application.arguments))
     {
-        ShowSendToFailure(owner, application,
-                          L"Arguments must contain %files%.");
+        ShowSendToFailure(
+            owner, application,
+            L"Arguments must contain exactly one of %files% or %folder%.");
         return false;
     }
 
@@ -1261,7 +1346,7 @@ bool SendSelectedTracksToApplication(HWND owner, int applicationIndex)
                                expandedArguments))
     {
         ShowSendToFailure(owner, application,
-                          L"Arguments must contain %files%.");
+                          L"The selected tracks could not be expanded.");
         return false;
     }
 
@@ -1980,13 +2065,22 @@ void ShowTrackContextMenu(HWND window, LPARAM lParam)
                 CommandShowTrackProperties, L"Properties");
     for (std::size_t index = 0; index < sendToApplications.size(); ++index)
     {
-        AppendMenuW(sendToMenu, MF_STRING,
+        const bool canUse = CanUseSendToApplication(
+            sendToApplications[index], selectedCount);
+        AppendMenuW(sendToMenu,
+                    MF_STRING | (canUse ? MF_ENABLED : MF_GRAYED),
                     SendToApplicationCommandBase +
                         static_cast<UINT>(index),
                     sendToApplications[index].name.c_str());
     }
-    const UINT sendToState = selectedCount > 0 &&
-        !sendToApplications.empty() ? MF_ENABLED : MF_GRAYED;
+    const bool canUseAnySendToApplication = std::any_of(
+        sendToApplications.begin(), sendToApplications.end(),
+        [selectedCount](const SendToApplication& application)
+        {
+            return CanUseSendToApplication(application, selectedCount);
+        });
+    const UINT sendToState = canUseAnySendToApplication
+        ? MF_ENABLED : MF_GRAYED;
     AppendMenuW(menu, MF_POPUP | sendToState,
                 reinterpret_cast<UINT_PTR>(sendToMenu), L"Send to");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -3347,10 +3441,58 @@ bool IsSendToNameAvailable(const std::wstring& name, int ignoreIndex = -1)
     return true;
 }
 
+std::size_t CountSendToPlaceholder(const std::wstring& arguments,
+                                   const std::wstring& placeholder)
+{
+    std::size_t count = 0;
+    std::size_t position = 0;
+    while ((position = arguments.find(placeholder, position)) !=
+           std::wstring::npos)
+    {
+        ++count;
+        position += placeholder.size();
+    }
+    return count;
+}
+
+SendToArgumentMode GetSendToArgumentMode(const std::wstring& arguments)
+{
+    if (!HasNonWhitespaceText(arguments))
+    {
+        return SendToArgumentMode::Invalid;
+    }
+    const std::size_t filesCount =
+        CountSendToPlaceholder(arguments, L"%files%");
+    const std::size_t folderCount =
+        CountSendToPlaceholder(arguments, L"%folder%");
+    if (filesCount == 1 && folderCount == 0)
+    {
+        return SendToArgumentMode::Files;
+    }
+    if (filesCount == 0 && folderCount == 1)
+    {
+        return SendToArgumentMode::Folder;
+    }
+    return SendToArgumentMode::Invalid;
+}
+
 bool IsValidSendToArguments(const std::wstring& arguments)
 {
-    return HasNonWhitespaceText(arguments) &&
-        arguments.find(L"%files%") != std::wstring::npos;
+    return GetSendToArgumentMode(arguments) != SendToArgumentMode::Invalid;
+}
+
+bool CanUseSendToApplication(const SendToApplication& application,
+                             int selectedTrackCount)
+{
+    switch (GetSendToArgumentMode(application.arguments))
+    {
+    case SendToArgumentMode::Files:
+        return selectedTrackCount >= 1;
+    case SendToArgumentMode::Folder:
+        return selectedTrackCount == 1;
+    default:
+        return false;
+    }
 }
 
 bool ValidateSendToApplication(HWND owner,
@@ -3391,7 +3533,9 @@ bool ValidateSendToApplication(HWND owner,
     }
     if (!IsValidSendToArguments(application.arguments))
     {
-        MessageBoxW(owner, L"Arguments must contain %files%.",
+        MessageBoxW(owner,
+                    L"Arguments must contain exactly one of:\n"
+                    L"%files%\n%folder%",
                     L"Send To Applications", MB_OK | MB_ICONINFORMATION);
         return false;
     }
