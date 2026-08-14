@@ -28,6 +28,10 @@ namespace
 constexpr wchar_t WindowClassName[] = L"MusicPlaylistManagerWindow";
 constexpr wchar_t OrganizerWindowClassName[] =
     L"MusicPlaylistManagerOrganizerWindow";
+constexpr wchar_t SendToSettingsWindowClassName[] =
+    L"MusicPlaylistManagerSendToSettingsWindow";
+constexpr wchar_t SendToEditorWindowClassName[] =
+    L"MusicPlaylistManagerSendToEditorWindow";
 constexpr wchar_t WindowTitle[] = L"Music Playlist Manager";
 constexpr int SplitterWidth = 6;
 constexpr int MinimumPaneWidth = 120;
@@ -45,6 +49,7 @@ constexpr UINT CommandOpenAudioFiles = 1009;
 constexpr UINT CommandImportPlaylist = 1010;
 constexpr UINT CommandExit = 1011;
 constexpr UINT CommandOrganizePlaylists = 1012;
+constexpr UINT CommandSendToApplications = 1013;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
 constexpr UINT MessagePreparePlaylistLabelEdit = WM_APP + 2;
 constexpr UINT MessageTogglePlaylistGroup = WM_APP + 3;
@@ -59,6 +64,17 @@ constexpr UINT OrganizerCommandRenameGroup = 2102;
 constexpr UINT OrganizerCommandDeleteGroup = 2103;
 constexpr UINT OrganizerCommandDeletePlaylists = 2104;
 constexpr UINT OrganizerMoveToGroupCommandBase = 22000;
+constexpr int SendToListId = 3001;
+constexpr int SendToAddButtonId = 3002;
+constexpr int SendToEditButtonId = 3003;
+constexpr int SendToRemoveButtonId = 3004;
+constexpr int SendToCloseButtonId = 3005;
+constexpr int SendToEditorNameId = 3101;
+constexpr int SendToEditorExecutableId = 3102;
+constexpr int SendToEditorBrowseId = 3103;
+constexpr int SendToEditorArgumentsId = 3104;
+constexpr int SendToEditorOkId = 3105;
+constexpr int SendToEditorCancelId = 3106;
 
 HWND mainWindow = nullptr;
 HWND playlistListView = nullptr;
@@ -69,6 +85,7 @@ HWND trackTooltip = nullptr;
 HMENU fileMenu = nullptr;
 HMENU playlistMenu = nullptr;
 HMENU trackMenu = nullptr;
+HMENU settingsMenu = nullptr;
 HWND organizerWindow = nullptr;
 HWND organizerGroupList = nullptr;
 HWND organizerPlaylistList = nullptr;
@@ -79,6 +96,17 @@ int organizerContextGroupId = -1;
 bool isRefreshingOrganizerGroups = false;
 std::vector<int> organizerVisiblePlaylistIndices;
 std::vector<int> organizerMoveMenuGroupIds;
+HWND sendToSettingsWindow = nullptr;
+HWND sendToList = nullptr;
+HWND sendToAddButton = nullptr;
+HWND sendToEditButton = nullptr;
+HWND sendToRemoveButton = nullptr;
+HWND sendToCloseButton = nullptr;
+HWND sendToEditorWindow = nullptr;
+HWND sendToEditorName = nullptr;
+HWND sendToEditorExecutable = nullptr;
+HWND sendToEditorArguments = nullptr;
+int sendToEditorIndex = -1;
 HFONT statusFont = nullptr;
 int statusHeight = 32;
 int splitterX = 240;
@@ -101,6 +129,7 @@ int nextGroupId = 1;
 std::vector<Playlist> playlists{
     {L"New Playlist", L"", NewPlaylistGroupId, {}, false}
 };
+std::vector<SendToApplication> sendToApplications;
 int selectedPlaylistIndex = 0;
 bool isRefreshingPlaylistList = false;
 bool isRefreshingTrackList = false;
@@ -138,7 +167,12 @@ constexpr UINT_PTR TrackTooltipSubclassId = 2;
 
 void ResetListTooltip(ListTooltipState& state);
 void ShowPlaylistOrganizer(HWND owner);
+void ShowSendToApplications(HWND owner);
 LRESULT CALLBACK PlaylistOrganizerWindowProcedure(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK SendToSettingsWindowProcedure(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK SendToEditorWindowProcedure(
     HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
 void MarkAppStateDirty()
@@ -154,6 +188,7 @@ AppState CaptureCurrentAppState()
     AppState state{};
     state.playlistGroups = playlistGroups;
     state.playlists = playlists;
+    state.sendToApplications = sendToApplications;
     state.selectedPlaylistIndex = selectedPlaylistIndex;
     state.splitterX = splitterX;
     RECT windowRect{};
@@ -208,6 +243,7 @@ void ApplyLoadedAppState(AppState state)
 {
     playlistGroups = std::move(state.playlistGroups);
     playlists = std::move(state.playlists);
+    sendToApplications = std::move(state.sendToApplications);
     NormalizePlaylistGroups(playlistGroups, playlists, nextGroupId);
     selectedPlaylistIndex = state.selectedPlaylistIndex;
     splitterX = state.splitterX;
@@ -224,6 +260,7 @@ void ResetToDefaultAppState()
     playlistGroups = {{NewPlaylistGroupId, L"New", true}};
     nextGroupId = 1;
     playlists = {{L"New Playlist", L"", NewPlaylistGroupId, {}, false}};
+    sendToApplications.clear();
     selectedPlaylistIndex = 0;
     splitterX = 240;
     savedWindowX = 0;
@@ -972,16 +1009,20 @@ bool CreateMainMenuBar(HWND window)
     fileMenu = CreatePopupMenu();
     playlistMenu = CreatePopupMenu();
     trackMenu = CreatePopupMenu();
+    settingsMenu = CreatePopupMenu();
     if (menuBar == nullptr || fileMenu == nullptr ||
-        playlistMenu == nullptr || trackMenu == nullptr)
+        playlistMenu == nullptr || trackMenu == nullptr ||
+        settingsMenu == nullptr)
     {
         if (menuBar != nullptr) DestroyMenu(menuBar);
         if (fileMenu != nullptr) DestroyMenu(fileMenu);
         if (playlistMenu != nullptr) DestroyMenu(playlistMenu);
         if (trackMenu != nullptr) DestroyMenu(trackMenu);
+        if (settingsMenu != nullptr) DestroyMenu(settingsMenu);
         fileMenu = nullptr;
         playlistMenu = nullptr;
         trackMenu = nullptr;
+        settingsMenu = nullptr;
         return false;
     }
 
@@ -1013,12 +1054,17 @@ bool CreateMainMenuBar(HWND window)
     AppendMenuW(trackMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(trackMenu, MF_STRING, CommandDeleteTracks, L"Delete");
 
+    AppendMenuW(settingsMenu, MF_STRING, CommandSendToApplications,
+                L"Send To Applications...");
+
     AppendMenuW(menuBar, MF_POPUP,
                 reinterpret_cast<UINT_PTR>(fileMenu), L"&File");
     AppendMenuW(menuBar, MF_POPUP,
                 reinterpret_cast<UINT_PTR>(playlistMenu), L"&Playlist");
     AppendMenuW(menuBar, MF_POPUP,
                 reinterpret_cast<UINT_PTR>(trackMenu), L"&Track");
+    AppendMenuW(menuBar, MF_POPUP,
+                reinterpret_cast<UINT_PTR>(settingsMenu), L"&Settings");
 
     if (!SetMenu(window, menuBar))
     {
@@ -1026,6 +1072,7 @@ bool CreateMainMenuBar(HWND window)
         fileMenu = nullptr;
         playlistMenu = nullptr;
         trackMenu = nullptr;
+        settingsMenu = nullptr;
         return false;
     }
     UpdateMainMenuState();
@@ -3028,6 +3075,552 @@ void ShowPlaylistOrganizer(HWND owner)
     }
 }
 
+std::wstring GetControlText(HWND control)
+{
+    const int length = GetWindowTextLengthW(control);
+    std::wstring text(static_cast<std::size_t>(std::max(0, length)) + 1,
+                      L'\0');
+    if (length > 0)
+    {
+        GetWindowTextW(control, text.data(), length + 1);
+    }
+    text.resize(static_cast<std::size_t>(std::max(0, length)));
+    return text;
+}
+
+bool HasNonWhitespaceText(const std::wstring& text)
+{
+    return std::any_of(text.begin(), text.end(), [](wchar_t character) {
+        return std::iswspace(character) == 0;
+    });
+}
+
+bool IsSendToNameAvailable(const std::wstring& name, int ignoreIndex = -1)
+{
+    if (!HasNonWhitespaceText(name))
+    {
+        return false;
+    }
+    for (std::size_t index = 0; index < sendToApplications.size(); ++index)
+    {
+        if (static_cast<int>(index) != ignoreIndex &&
+            CompareStringOrdinal(name.c_str(), -1,
+                                 sendToApplications[index].name.c_str(), -1,
+                                 TRUE) == CSTR_EQUAL)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool IsValidSendToArguments(const std::wstring& arguments)
+{
+    return HasNonWhitespaceText(arguments) &&
+        arguments.find(L"%files%") != std::wstring::npos;
+}
+
+bool ValidateSendToApplication(HWND owner,
+                               const SendToApplication& application,
+                               int ignoreIndex)
+{
+    if (!HasNonWhitespaceText(application.name))
+    {
+        MessageBoxW(owner, L"Name is required.", L"Send To Applications",
+                    MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+    if (!IsSendToNameAvailable(application.name, ignoreIndex))
+    {
+        MessageBoxW(owner, L"Application names must be unique.",
+                    L"Send To Applications", MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+    if (!HasNonWhitespaceText(application.executablePath))
+    {
+        MessageBoxW(owner, L"Executable is required.",
+                    L"Send To Applications", MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(application.executablePath, error) ||
+        error)
+    {
+        MessageBoxW(owner, L"Executable must be an existing file.",
+                    L"Send To Applications", MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+    if (!HasNonWhitespaceText(application.arguments))
+    {
+        MessageBoxW(owner, L"Arguments are required.",
+                    L"Send To Applications", MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+    if (!IsValidSendToArguments(application.arguments))
+    {
+        MessageBoxW(owner, L"Arguments must contain %files%.",
+                    L"Send To Applications", MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+    if (ignoreIndex < 0 &&
+        sendToApplications.size() >= MaximumSendToApplications)
+    {
+        MessageBoxW(owner, L"Up to 10 applications can be registered.",
+                    L"Send To Applications", MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+    return true;
+}
+
+int GetSelectedSendToApplicationIndex()
+{
+    return sendToList == nullptr
+        ? -1
+        : ListView_GetNextItem(sendToList, -1, LVNI_SELECTED);
+}
+
+void UpdateSendToSettingsButtons()
+{
+    const bool hasSelection = GetSelectedSendToApplicationIndex() >= 0;
+    EnableWindow(sendToAddButton,
+                 sendToApplications.size() < MaximumSendToApplications);
+    EnableWindow(sendToEditButton, hasSelection);
+    EnableWindow(sendToRemoveButton, hasSelection);
+}
+
+void RefreshSendToApplicationsList(int rowToSelect = -1)
+{
+    if (sendToList == nullptr)
+    {
+        return;
+    }
+    ListView_DeleteAllItems(sendToList);
+    for (std::size_t index = 0; index < sendToApplications.size(); ++index)
+    {
+        InsertListItem(sendToList, static_cast<int>(index),
+                       sendToApplications[index].name);
+        ListView_SetItemText(
+            sendToList, static_cast<int>(index), 1,
+            const_cast<wchar_t*>(
+                sendToApplications[index].executablePath.c_str()));
+    }
+    if (rowToSelect >= 0 &&
+        rowToSelect < static_cast<int>(sendToApplications.size()))
+    {
+        ListView_SetItemState(sendToList, rowToSelect,
+                              LVIS_SELECTED | LVIS_FOCUSED,
+                              LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(sendToList, rowToSelect, FALSE);
+    }
+    UpdateSendToSettingsButtons();
+}
+
+void BrowseForSendToExecutable(HWND owner)
+{
+    std::array<wchar_t, 32768> path{};
+    const std::wstring current = GetControlText(sendToEditorExecutable);
+    if (current.size() < path.size())
+    {
+        std::copy(current.begin(), current.end(), path.begin());
+    }
+    constexpr wchar_t filter[] =
+        L"Applications (*.exe)\0*.exe\0All files (*.*)\0*.*\0\0";
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = owner;
+    dialog.lpstrFilter = filter;
+    dialog.lpstrFile = path.data();
+    dialog.nMaxFile = static_cast<DWORD>(path.size());
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
+                   OFN_HIDEREADONLY;
+    dialog.lpstrDefExt = L"exe";
+    if (GetOpenFileNameW(&dialog))
+    {
+        SetWindowTextW(sendToEditorExecutable, path.data());
+    }
+}
+
+void LayoutSendToEditor(HWND window)
+{
+    RECT client{};
+    GetClientRect(window, &client);
+    constexpr int margin = 14;
+    constexpr int labelWidth = 82;
+    constexpr int rowHeight = 25;
+    constexpr int gap = 12;
+    constexpr int browseWidth = 88;
+    const int width = client.right - client.left;
+    const int editX = margin + labelWidth;
+    const int editWidth = std::max(80, width - editX - margin);
+    MoveWindow(GetDlgItem(window, 3201), margin, margin,
+               labelWidth, rowHeight, TRUE);
+    MoveWindow(sendToEditorName, editX, margin,
+               editWidth, rowHeight, TRUE);
+    const int executableY = margin + rowHeight + gap;
+    MoveWindow(GetDlgItem(window, 3202), margin, executableY,
+               labelWidth, rowHeight, TRUE);
+    MoveWindow(sendToEditorExecutable, editX, executableY,
+               std::max(40, editWidth - browseWidth - 6), rowHeight, TRUE);
+    MoveWindow(GetDlgItem(window, SendToEditorBrowseId),
+               editX + editWidth - browseWidth, executableY,
+               browseWidth, rowHeight, TRUE);
+    const int argumentsY = executableY + rowHeight + gap;
+    MoveWindow(GetDlgItem(window, 3203), margin, argumentsY,
+               labelWidth, rowHeight, TRUE);
+    MoveWindow(sendToEditorArguments, editX, argumentsY,
+               editWidth, rowHeight, TRUE);
+    const int buttonY = client.bottom - margin - 28;
+    MoveWindow(GetDlgItem(window, SendToEditorOkId),
+               width - margin - 166, buttonY, 78, 28, TRUE);
+    MoveWindow(GetDlgItem(window, SendToEditorCancelId),
+               width - margin - 82, buttonY, 82, 28, TRUE);
+}
+
+LRESULT CALLBACK SendToEditorWindowProcedure(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_CREATE:
+    {
+        const HINSTANCE instance = reinterpret_cast<LPCREATESTRUCTW>(
+            lParam)->hInstance;
+        CreateWindowExW(0, WC_STATICW, L"Name:", WS_CHILD | WS_VISIBLE,
+                        0, 0, 0, 0, window,
+                        reinterpret_cast<HMENU>(3201), instance, nullptr);
+        CreateWindowExW(0, WC_STATICW, L"Executable:",
+                        WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window,
+                        reinterpret_cast<HMENU>(3202), instance, nullptr);
+        CreateWindowExW(0, WC_STATICW, L"Arguments:",
+                        WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window,
+                        reinterpret_cast<HMENU>(3203), instance, nullptr);
+        sendToEditorName = CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_EDITW, L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(SendToEditorNameId), instance, nullptr);
+        sendToEditorExecutable = CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_EDITW, L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(SendToEditorExecutableId), instance,
+            nullptr);
+        sendToEditorArguments = CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_EDITW, L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(SendToEditorArgumentsId), instance,
+            nullptr);
+        CreateWindowExW(0, WC_BUTTONW, L"Browse...",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                        0, 0, 0, 0, window,
+                        reinterpret_cast<HMENU>(SendToEditorBrowseId),
+                        instance, nullptr);
+        CreateWindowExW(0, WC_BUTTONW, L"OK",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                        0, 0, 0, 0, window,
+                        reinterpret_cast<HMENU>(SendToEditorOkId), instance,
+                        nullptr);
+        CreateWindowExW(0, WC_BUTTONW, L"Cancel",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                        0, 0, 0, 0, window,
+                        reinterpret_cast<HMENU>(SendToEditorCancelId),
+                        instance, nullptr);
+        if (sendToEditorIndex >= 0 &&
+            sendToEditorIndex < static_cast<int>(sendToApplications.size()))
+        {
+            const SendToApplication& application =
+                sendToApplications[static_cast<std::size_t>(sendToEditorIndex)];
+            SetWindowTextW(sendToEditorName, application.name.c_str());
+            SetWindowTextW(sendToEditorExecutable,
+                           application.executablePath.c_str());
+            SetWindowTextW(sendToEditorArguments,
+                           application.arguments.c_str());
+        }
+        SetFocus(sendToEditorName);
+        return 0;
+    }
+    case WM_SIZE:
+        LayoutSendToEditor(window);
+        return 0;
+    case WM_COMMAND:
+        switch (LOWORD(wParam))
+        {
+        case SendToEditorBrowseId:
+            BrowseForSendToExecutable(window);
+            return 0;
+        case SendToEditorOkId:
+        {
+            SendToApplication application{
+                GetControlText(sendToEditorName),
+                GetControlText(sendToEditorExecutable),
+                GetControlText(sendToEditorArguments)};
+            if (!ValidateSendToApplication(
+                    window, application, sendToEditorIndex))
+            {
+                return 0;
+            }
+            int selectedRow = sendToEditorIndex;
+            if (sendToEditorIndex >= 0)
+            {
+                sendToApplications[static_cast<std::size_t>(
+                    sendToEditorIndex)] = std::move(application);
+            }
+            else
+            {
+                sendToApplications.push_back(std::move(application));
+                selectedRow = static_cast<int>(sendToApplications.size()) - 1;
+            }
+            MarkAppStateDirty();
+            RefreshSendToApplicationsList(selectedRow);
+            DestroyWindow(window);
+            return 0;
+        }
+        case SendToEditorCancelId:
+            DestroyWindow(window);
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        DestroyWindow(window);
+        return 0;
+    case WM_DESTROY:
+        sendToEditorWindow = nullptr;
+        sendToEditorName = nullptr;
+        sendToEditorExecutable = nullptr;
+        sendToEditorArguments = nullptr;
+        EnableWindow(sendToSettingsWindow, TRUE);
+        SetForegroundWindow(sendToSettingsWindow);
+        return 0;
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+void ShowSendToApplicationEditor(int applicationIndex)
+{
+    if (applicationIndex < -1 ||
+        applicationIndex >= static_cast<int>(sendToApplications.size()) ||
+        (applicationIndex < 0 &&
+         sendToApplications.size() >= MaximumSendToApplications))
+    {
+        return;
+    }
+    sendToEditorIndex = applicationIndex;
+    RECT ownerRect{};
+    GetWindowRect(sendToSettingsWindow, &ownerRect);
+    constexpr int width = 650;
+    constexpr int height = 210;
+    sendToEditorWindow = CreateWindowExW(
+        WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+        SendToEditorWindowClassName,
+        applicationIndex < 0 ? L"Add Send To Application"
+                             : L"Edit Send To Application",
+        WS_CAPTION | WS_SYSMENU | WS_SIZEBOX,
+        ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2,
+        ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2,
+        width, height, sendToSettingsWindow, nullptr,
+        GetModuleHandleW(nullptr), nullptr);
+    if (sendToEditorWindow == nullptr)
+    {
+        return;
+    }
+    EnableWindow(sendToSettingsWindow, FALSE);
+    ShowWindow(sendToEditorWindow, SW_SHOW);
+    UpdateWindow(sendToEditorWindow);
+    MSG message{};
+    while (IsWindow(sendToEditorWindow) &&
+           GetMessageW(&message, nullptr, 0, 0) > 0)
+    {
+        if (!IsDialogMessageW(sendToEditorWindow, &message))
+        {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+}
+
+void RemoveSelectedSendToApplication(HWND owner)
+{
+    const int index = GetSelectedSendToApplicationIndex();
+    if (index < 0 || index >= static_cast<int>(sendToApplications.size()))
+    {
+        return;
+    }
+    const std::wstring message = L"Remove \"" +
+        sendToApplications[static_cast<std::size_t>(index)].name +
+        L"\" from Send To applications?";
+    if (MessageBoxW(owner, message.c_str(), L"Send To Applications",
+                    MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
+    {
+        return;
+    }
+    sendToApplications.erase(sendToApplications.begin() + index);
+    MarkAppStateDirty();
+    const int selectedRow = sendToApplications.empty()
+        ? -1
+        : std::min(index, static_cast<int>(sendToApplications.size()) - 1);
+    RefreshSendToApplicationsList(selectedRow);
+}
+
+void LayoutSendToSettings(HWND window)
+{
+    RECT client{};
+    GetClientRect(window, &client);
+    constexpr int margin = 12;
+    constexpr int buttonWidth = 90;
+    constexpr int buttonHeight = 30;
+    constexpr int gap = 8;
+    const int width = client.right - client.left;
+    const int height = client.bottom - client.top;
+    const int buttonY = height - margin - buttonHeight;
+    MoveWindow(sendToList, margin, margin, width - margin * 2,
+               std::max(0, buttonY - margin - gap), TRUE);
+    MoveWindow(sendToAddButton, margin, buttonY,
+               buttonWidth, buttonHeight, TRUE);
+    MoveWindow(sendToEditButton, margin + buttonWidth + gap, buttonY,
+               buttonWidth, buttonHeight, TRUE);
+    MoveWindow(sendToRemoveButton, margin + (buttonWidth + gap) * 2, buttonY,
+               buttonWidth, buttonHeight, TRUE);
+    MoveWindow(sendToCloseButton, width - margin - buttonWidth, buttonY,
+               buttonWidth, buttonHeight, TRUE);
+    ListView_SetColumnWidth(sendToList, 0, std::max(100, width / 3));
+    ListView_SetColumnWidth(sendToList, 1,
+                            std::max(100, width - width / 3 - margin * 2 - 5));
+}
+
+LRESULT CALLBACK SendToSettingsWindowProcedure(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_CREATE:
+    {
+        const HINSTANCE instance = reinterpret_cast<LPCREATESTRUCTW>(
+            lParam)->hInstance;
+        sendToList = CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT |
+                LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+            0, 0, 0, 0, window, reinterpret_cast<HMENU>(SendToListId),
+            instance, nullptr);
+        sendToAddButton = CreateWindowExW(
+            0, WC_BUTTONW, L"Add", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(SendToAddButtonId), instance, nullptr);
+        sendToEditButton = CreateWindowExW(
+            0, WC_BUTTONW, L"Edit", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(SendToEditButtonId), instance, nullptr);
+        sendToRemoveButton = CreateWindowExW(
+            0, WC_BUTTONW, L"Remove", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(SendToRemoveButtonId), instance, nullptr);
+        sendToCloseButton = CreateWindowExW(
+            0, WC_BUTTONW, L"Close",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(SendToCloseButtonId), instance, nullptr);
+        if (sendToList == nullptr || sendToAddButton == nullptr ||
+            sendToEditButton == nullptr || sendToRemoveButton == nullptr ||
+            sendToCloseButton == nullptr)
+        {
+            return -1;
+        }
+        ListView_SetExtendedListViewStyle(
+            sendToList, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+        InsertColumn(sendToList, 0, L"Name", 220);
+        InsertColumn(sendToList, 1, L"Executable", 480);
+        RefreshSendToApplicationsList();
+        return 0;
+    }
+    case WM_SIZE:
+        LayoutSendToSettings(window);
+        return 0;
+    case WM_COMMAND:
+        switch (LOWORD(wParam))
+        {
+        case SendToAddButtonId:
+            ShowSendToApplicationEditor(-1);
+            return 0;
+        case SendToEditButtonId:
+            ShowSendToApplicationEditor(GetSelectedSendToApplicationIndex());
+            return 0;
+        case SendToRemoveButtonId:
+            RemoveSelectedSendToApplication(window);
+            return 0;
+        case SendToCloseButtonId:
+            SendMessageW(window, WM_CLOSE, 0, 0);
+            return 0;
+        }
+        break;
+    case WM_NOTIFY:
+    {
+        NMHDR* header = reinterpret_cast<NMHDR*>(lParam);
+        if (header->hwndFrom == sendToList)
+        {
+            if (header->code == LVN_ITEMCHANGED)
+            {
+                UpdateSendToSettingsButtons();
+                return 0;
+            }
+            if (header->code == NM_DBLCLK)
+            {
+                ShowSendToApplicationEditor(
+                    GetSelectedSendToApplicationIndex());
+                return 0;
+            }
+        }
+        break;
+    }
+    case WM_CLOSE:
+        DestroyWindow(window);
+        return 0;
+    case WM_DESTROY:
+        sendToSettingsWindow = nullptr;
+        sendToList = nullptr;
+        sendToAddButton = nullptr;
+        sendToEditButton = nullptr;
+        sendToRemoveButton = nullptr;
+        sendToCloseButton = nullptr;
+        EnableWindow(mainWindow, TRUE);
+        SetForegroundWindow(mainWindow);
+        return 0;
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+void ShowSendToApplications(HWND owner)
+{
+    RECT ownerRect{};
+    GetWindowRect(owner, &ownerRect);
+    constexpr int width = 760;
+    constexpr int height = 460;
+    sendToSettingsWindow = CreateWindowExW(
+        WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+        SendToSettingsWindowClassName, L"Send To Applications",
+        WS_OVERLAPPEDWINDOW,
+        ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2,
+        ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2,
+        width, height, owner, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (sendToSettingsWindow == nullptr)
+    {
+        return;
+    }
+    EnableWindow(owner, FALSE);
+    ShowWindow(sendToSettingsWindow, SW_SHOW);
+    UpdateWindow(sendToSettingsWindow);
+    MSG message{};
+    while (IsWindow(sendToSettingsWindow) &&
+           GetMessageW(&message, nullptr, 0, 0) > 0)
+    {
+        if (!IsDialogMessageW(sendToSettingsWindow, &message))
+        {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+}
+
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
                                  WPARAM wParam, LPARAM lParam)
 {
@@ -3105,6 +3698,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             return 0;
         case CommandOrganizePlaylists:
             ShowPlaylistOrganizer(window);
+            return 0;
+        case CommandSendToApplications:
+            ShowSendToApplications(window);
             return 0;
         case CommandNewPlaylist:
             CreateNewPlaylist();
@@ -3493,6 +4089,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         fileMenu = nullptr;
         playlistMenu = nullptr;
         trackMenu = nullptr;
+        settingsMenu = nullptr;
         PostQuitMessage(0);
         return 0;
     }
@@ -3557,6 +4154,32 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     {
         MessageBoxW(nullptr,
                     L"The Playlist Organizer window class could not be "
+                    L"registered.",
+                    WindowTitle, MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
+    WNDCLASSEXW sendToSettingsClass = windowClass;
+    sendToSettingsClass.lpfnWndProc = SendToSettingsWindowProcedure;
+    sendToSettingsClass.lpszClassName = SendToSettingsWindowClassName;
+    sendToSettingsClass.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
+    if (!RegisterClassExW(&sendToSettingsClass))
+    {
+        MessageBoxW(nullptr,
+                    L"The Send To settings window class could not be "
+                    L"registered.",
+                    WindowTitle, MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
+    WNDCLASSEXW sendToEditorClass = windowClass;
+    sendToEditorClass.lpfnWndProc = SendToEditorWindowProcedure;
+    sendToEditorClass.lpszClassName = SendToEditorWindowClassName;
+    sendToEditorClass.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
+    if (!RegisterClassExW(&sendToEditorClass))
+    {
+        MessageBoxW(nullptr,
+                    L"The Send To editor window class could not be "
                     L"registered.",
                     WindowTitle, MB_OK | MB_ICONERROR);
         return 1;

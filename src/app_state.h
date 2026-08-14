@@ -7,8 +7,16 @@
 #include "playlist.h"
 
 inline constexpr std::size_t TrackColumnCount = 6;
+inline constexpr std::size_t MaximumSendToApplications = 10;
 inline constexpr std::array<int, TrackColumnCount> DefaultTrackColumnWidths = {
     180, 140, 160, 180, 85, 240
+};
+
+struct SendToApplication
+{
+    std::wstring name;
+    std::wstring executablePath;
+    std::wstring arguments;
 };
 
 struct AppState
@@ -18,6 +26,7 @@ struct AppState
         {NewPlaylistGroupId, L"New", true}
     };
     std::vector<Playlist> playlists;
+    std::vector<SendToApplication> sendToApplications;
     int selectedPlaylistIndex = -1;
     int splitterX = 240;
     int windowX = 0;

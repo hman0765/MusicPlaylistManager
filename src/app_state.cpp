@@ -209,6 +209,28 @@ void AppendPlaylistGroupJson(std::wstring& output,
     output += L"}";
 }
 
+void AppendSendToApplicationJson(std::wstring& output,
+                                 const SendToApplication& application,
+                                 int indent)
+{
+    output += L"{\n";
+    const auto appendField = [&](const wchar_t* name,
+                                 const std::wstring& value,
+                                 bool trailingComma)
+    {
+        AppendIndent(output, indent + 1);
+        AppendJsonString(output, name);
+        output += L": ";
+        AppendJsonString(output, value);
+        output += trailingComma ? L",\n" : L"\n";
+    };
+    appendField(L"name", application.name, true);
+    appendField(L"executablePath", application.executablePath, true);
+    appendField(L"arguments", application.arguments, false);
+    AppendIndent(output, indent);
+    output += L"}";
+}
+
 std::wstring SerializeState(const AppState& state)
 {
     std::wstring output = L"{\n";
@@ -245,6 +267,22 @@ std::wstring SerializeState(const AppState& state)
             AppendPlaylistGroupJson(output, state.playlistGroups[index], 2);
             output += index + 1 < state.playlistGroups.size()
                 ? L",\n" : L"\n";
+        }
+        output += L"  ";
+    }
+    output += L"],\n";
+    output += L"  \"sendToApplications\": [";
+    if (!state.sendToApplications.empty())
+    {
+        output += L"\n";
+        const std::size_t count = std::min(
+            state.sendToApplications.size(), MaximumSendToApplications);
+        for (std::size_t index = 0; index < count; ++index)
+        {
+            output += L"    ";
+            AppendSendToApplicationJson(
+                output, state.sendToApplications[index], 2);
+            output += index + 1 < count ? L",\n" : L"\n";
         }
         output += L"  ";
     }
@@ -646,6 +684,31 @@ PlaylistGroup ReadPlaylistGroup(JsonReader& reader)
     return group;
 }
 
+bool ReadSendToApplication(JsonReader& reader,
+                           SendToApplication& application)
+{
+    unsigned int fields = 0;
+    reader.ReadObject([&](const std::wstring& name) {
+        if (name == L"name")
+        {
+            application.name = reader.ReadString();
+            fields |= 1U << 0;
+        }
+        else if (name == L"executablePath")
+        {
+            application.executablePath = reader.ReadString();
+            fields |= 1U << 1;
+        }
+        else if (name == L"arguments")
+        {
+            application.arguments = reader.ReadString();
+            fields |= 1U << 2;
+        }
+        else reader.SkipValue();
+    });
+    return fields == 0x07U;
+}
+
 void ReadGui(JsonReader& reader, AppState& state)
 {
     unsigned int fields = 0;
@@ -714,6 +777,19 @@ AppState DeserializeState(const std::wstring& text)
                 state.playlistGroups.push_back(ReadPlaylistGroup(reader));
             });
             fields |= 1U << 4;
+        }
+        else if (name == L"sendToApplications")
+        {
+            reader.ReadArray([&]() {
+                SendToApplication application{};
+                if (ReadSendToApplication(reader, application) &&
+                    state.sendToApplications.size() <
+                        MaximumSendToApplications)
+                {
+                    state.sendToApplications.push_back(
+                        std::move(application));
+                }
+            });
         }
         else if (name == L"playlists")
         {
