@@ -5,6 +5,7 @@
 #include <audioproperties.h>
 #include <fileref.h>
 #include <tag.h>
+#include <tpropertymap.h>
 
 #include <algorithm>
 #include <array>
@@ -62,6 +63,45 @@ std::wstring TagLibStringToWString(const TagLib::String& value)
         return L"";
     }
     return result;
+}
+
+std::wstring GetPropertyValue(const TagLib::PropertyMap& properties,
+                              const char* name)
+{
+    const TagLib::String key(name, TagLib::String::Latin1);
+    if (!properties.contains(key) || properties[key].isEmpty())
+    {
+        return L"";
+    }
+    return TagLibStringToWString(properties[key].front());
+}
+
+std::wstring GetUppercaseFormat(const std::wstring& path)
+{
+    std::wstring extension = std::filesystem::path(path).extension().wstring();
+    if (!extension.empty() && extension.front() == L'.')
+    {
+        extension.erase(extension.begin());
+    }
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](wchar_t character) { return std::towupper(character); });
+    return extension;
+}
+
+std::wstring FormatFileTime(const FILETIME& utcTime)
+{
+    FILETIME localTime{};
+    SYSTEMTIME systemTime{};
+    if (!FileTimeToLocalFileTime(&utcTime, &localTime) ||
+        !FileTimeToSystemTime(&localTime, &systemTime))
+    {
+        return L"";
+    }
+    wchar_t text[32]{};
+    swprintf(text, std::size(text), L"%04u-%02u-%02u %02u:%02u",
+             systemTime.wYear, systemTime.wMonth, systemTime.wDay,
+             systemTime.wHour, systemTime.wMinute);
+    return text;
 }
 
 std::wstring DecodeUtf8(std::string bytes)
@@ -220,13 +260,31 @@ Track CreateTrackFromFile(const std::wstring& path)
 
 bool UpdateTrackMetadata(Track& track)
 {
+    MetadataRequest request{};
+    request.title = request.artist = request.album = request.comment = true;
+    request.duration = true;
+    return UpdateTrackMetadata(track, request);
+}
+
+bool UpdateTrackMetadata(Track& track, const MetadataRequest& request)
+{
     if (track.path.empty())
     {
         return false;
     }
 
-    TagLib::FileRef file{TagLib::FileName(track.path.c_str())};
-    if (file.isNull())
+    std::error_code pathError;
+    if (!std::filesystem::is_regular_file(
+            std::filesystem::path(track.path), pathError) || pathError)
+    {
+        return false;
+    }
+
+    WIN32_FILE_ATTRIBUTE_DATA fileData{};
+    const bool needsFileProperties = request.fileSize || request.dateModified;
+    if (needsFileProperties &&
+        !GetFileAttributesExW(track.path.c_str(), GetFileExInfoStandard,
+                             &fileData))
     {
         return false;
     }
@@ -234,31 +292,114 @@ bool UpdateTrackMetadata(Track& track)
     bool changedMetadata = false;
     const auto updateString = [&changedMetadata](std::wstring& destination,
                                                   const std::wstring& value) {
-        if (!value.empty() && destination != value)
+        if (destination != value)
         {
             destination = value;
             changedMetadata = true;
         }
     };
 
-    if (const TagLib::Tag* tag = file.tag())
+    const bool needsTag = request.title || request.artist || request.album ||
+        request.comment || request.trackNumber || request.year ||
+        request.genre || request.albumArtist || request.discNumber;
+    const bool needsAudio = request.duration || request.bitrate ||
+        request.sampleRate;
+    if (needsTag || needsAudio)
     {
-        updateString(track.title, TagLibStringToWString(tag->title()));
-        updateString(track.artist, TagLibStringToWString(tag->artist()));
-        updateString(track.album, TagLibStringToWString(tag->album()));
-        updateString(track.comment, TagLibStringToWString(tag->comment()));
-    }
-    if (const TagLib::AudioProperties* properties = file.audioProperties())
-    {
-        const int durationSeconds = properties->lengthInSeconds();
-        const std::wstring duration = FormatDuration(durationSeconds);
-        if (track.durationSeconds != durationSeconds ||
-            track.duration != duration)
+        TagLib::FileRef file{TagLib::FileName(track.path.c_str()),
+                             needsAudio};
+        if (!file.isNull())
         {
-            track.durationSeconds = durationSeconds;
-            track.duration = duration;
+            if (const TagLib::Tag* tag = file.tag())
+            {
+                if (request.title)
+                    updateString(track.title,
+                                 TagLibStringToWString(tag->title()));
+                if (request.artist)
+                    updateString(track.artist,
+                                 TagLibStringToWString(tag->artist()));
+                if (request.album)
+                    updateString(track.album,
+                                 TagLibStringToWString(tag->album()));
+                if (request.comment)
+                    updateString(track.comment,
+                                 TagLibStringToWString(tag->comment()));
+                if (request.trackNumber)
+                    updateString(track.trackNumber,
+                                 tag->track() == 0 ? L"" :
+                                 std::to_wstring(tag->track()));
+                if (request.year)
+                    updateString(track.year,
+                                 tag->year() == 0 ? L"" :
+                                 std::to_wstring(tag->year()));
+                if (request.genre)
+                    updateString(track.genre,
+                                 TagLibStringToWString(tag->genre()));
+            }
+            if (request.albumArtist || request.discNumber)
+            {
+                const TagLib::PropertyMap properties = file.properties();
+                if (request.albumArtist)
+                    updateString(track.albumArtist,
+                                 GetPropertyValue(properties, "ALBUMARTIST"));
+                if (request.discNumber)
+                    updateString(track.discNumber,
+                                 GetPropertyValue(properties, "DISCNUMBER"));
+            }
+            if (needsAudio)
+            {
+                if (const TagLib::AudioProperties* properties =
+                        file.audioProperties())
+                {
+                    if (request.duration)
+                    {
+                        const int seconds = properties->lengthInSeconds();
+                        const std::wstring duration = FormatDuration(seconds);
+                        if (track.durationSeconds != seconds ||
+                            track.duration != duration)
+                        {
+                            track.durationSeconds = seconds;
+                            track.duration = duration;
+                            changedMetadata = true;
+                        }
+                    }
+                    if (request.bitrate &&
+                        track.bitrate != properties->bitrate())
+                    {
+                        track.bitrate = properties->bitrate();
+                        changedMetadata = true;
+                    }
+                    if (request.sampleRate &&
+                        track.sampleRate != properties->sampleRate())
+                    {
+                        track.sampleRate = properties->sampleRate();
+                        changedMetadata = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if (request.format)
+    {
+        updateString(track.format, GetUppercaseFormat(track.path));
+    }
+    if (request.fileSize)
+    {
+        const std::uint64_t size =
+            (static_cast<std::uint64_t>(fileData.nFileSizeHigh) << 32) |
+            fileData.nFileSizeLow;
+        if (!track.hasFileSize || track.fileSize != size)
+        {
+            track.fileSize = size;
+            track.hasFileSize = true;
             changedMetadata = true;
         }
+    }
+    if (request.dateModified)
+    {
+        updateString(track.dateModified,
+                     FormatFileTime(fileData.ftLastWriteTime));
     }
     return changedMetadata;
 }

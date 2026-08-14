@@ -32,6 +32,8 @@ constexpr wchar_t SendToSettingsWindowClassName[] =
     L"MusicPlaylistManagerSendToSettingsWindow";
 constexpr wchar_t SendToEditorWindowClassName[] =
     L"MusicPlaylistManagerSendToEditorWindow";
+constexpr wchar_t TrackColumnsWindowClassName[] =
+    L"MusicPlaylistManagerTrackColumnsWindow";
 constexpr wchar_t WindowTitle[] = L"Music Playlist Manager";
 constexpr int SplitterWidth = 6;
 constexpr int MinimumPaneWidth = 120;
@@ -50,6 +52,7 @@ constexpr UINT CommandImportPlaylist = 1010;
 constexpr UINT CommandExit = 1011;
 constexpr UINT CommandOrganizePlaylists = 1012;
 constexpr UINT CommandSendToApplications = 1013;
+constexpr UINT CommandTrackColumns = 1014;
 constexpr UINT SendToApplicationCommandBase = 12000;
 constexpr UINT MaximumWindowsCommandLineLength = 32767;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
@@ -84,6 +87,10 @@ constexpr int SendToEditorBrowseId = 3103;
 constexpr int SendToEditorArgumentsId = 3104;
 constexpr int SendToEditorOkId = 3105;
 constexpr int SendToEditorCancelId = 3106;
+constexpr int TrackColumnsListId = 4001;
+constexpr int TrackColumnsUpButtonId = 4002;
+constexpr int TrackColumnsDownButtonId = 4003;
+constexpr int TrackColumnsCloseButtonId = 4004;
 
 HWND mainWindow = nullptr;
 HWND playlistListView = nullptr;
@@ -117,6 +124,12 @@ HWND sendToEditorName = nullptr;
 HWND sendToEditorExecutable = nullptr;
 HWND sendToEditorArguments = nullptr;
 int sendToEditorIndex = -1;
+HWND trackColumnsWindow = nullptr;
+HWND trackColumnsList = nullptr;
+HWND trackColumnsUpButton = nullptr;
+HWND trackColumnsDownButton = nullptr;
+HWND trackColumnsCloseButton = nullptr;
+bool isRefreshingTrackColumns = false;
 HFONT statusFont = nullptr;
 int statusHeight = 32;
 int splitterX = 240;
@@ -125,8 +138,9 @@ int savedWindowY = 0;
 bool hasSavedWindowPosition = false;
 int savedWindowWidth = 900;
 int savedWindowHeight = 600;
-std::array<int, TrackColumnCount> trackColumnWidths =
-    DefaultTrackColumnWidths;
+std::vector<TrackColumnConfig> trackColumnConfigs =
+    MakeDefaultTrackColumnConfigs();
+std::vector<TrackColumnId> visibleTrackColumnIds;
 bool isDraggingSplitter = false;
 int splitterDragOffset = 0;
 int splitterXAtDragStart = 240;
@@ -182,11 +196,16 @@ bool CanUseSendToApplication(const SendToApplication& application,
                              int selectedTrackCount);
 void ShowPlaylistOrganizer(HWND owner);
 void ShowSendToApplications(HWND owner);
+void ShowTrackColumns(HWND owner);
+void SaveCurrentTrackColumnWidths();
+void RebuildTrackListColumns();
 LRESULT CALLBACK PlaylistOrganizerWindowProcedure(
     HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK SendToSettingsWindowProcedure(
     HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK SendToEditorWindowProcedure(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK TrackColumnsWindowProcedure(
     HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
 void MarkAppStateDirty()
@@ -199,6 +218,7 @@ void MarkAppStateDirty()
 
 AppState CaptureCurrentAppState()
 {
+    SaveCurrentTrackColumnWidths();
     AppState state{};
     state.playlistGroups = playlistGroups;
     state.playlists = playlists;
@@ -223,19 +243,7 @@ AppState CaptureCurrentAppState()
         state.windowWidth = savedWindowWidth;
         state.windowHeight = savedWindowHeight;
     }
-    state.trackColumnWidths = trackColumnWidths;
-    if (trackListView != nullptr)
-    {
-        for (std::size_t index = 0; index < TrackColumnCount; ++index)
-        {
-            const int width = ListView_GetColumnWidth(
-                trackListView, static_cast<int>(index));
-            if (width > 0)
-            {
-                state.trackColumnWidths[index] = width;
-            }
-        }
-    }
+    state.trackColumns = trackColumnConfigs;
     return state;
 }
 
@@ -266,7 +274,7 @@ void ApplyLoadedAppState(AppState state)
     hasSavedWindowPosition = state.hasWindowPosition;
     savedWindowWidth = state.windowWidth;
     savedWindowHeight = state.windowHeight;
-    trackColumnWidths = state.trackColumnWidths;
+    trackColumnConfigs = std::move(state.trackColumns);
 }
 
 void ResetToDefaultAppState()
@@ -282,7 +290,7 @@ void ResetToDefaultAppState()
     hasSavedWindowPosition = false;
     savedWindowWidth = 900;
     savedWindowHeight = 600;
-    trackColumnWidths = DefaultTrackColumnWidths;
+    trackColumnConfigs = MakeDefaultTrackColumnConfigs();
     appStateDirty = false;
 }
 
@@ -517,27 +525,94 @@ void SetListItemText(HWND listView, int row, int column,
 
 void RefreshStatusBar();
 
-std::wstring GetTrackDisplayText(const Track& track, int column)
+std::wstring GetTrackColumnName(TrackColumnId id)
 {
-    switch (column)
+    switch (id)
     {
-    case 0:
+    case TrackColumnId::Title: return L"Title";
+    case TrackColumnId::Artist: return L"Artist";
+    case TrackColumnId::Album: return L"Album";
+    case TrackColumnId::Duration: return L"Duration";
+    case TrackColumnId::Comment: return L"Comment";
+    case TrackColumnId::Path: return L"Path";
+    case TrackColumnId::TrackNumber: return L"Track Number";
+    case TrackColumnId::Year: return L"Year";
+    case TrackColumnId::Genre: return L"Genre";
+    case TrackColumnId::AlbumArtist: return L"Album Artist";
+    case TrackColumnId::DiscNumber: return L"Disc Number";
+    case TrackColumnId::Format: return L"Format";
+    case TrackColumnId::Bitrate: return L"Bitrate";
+    case TrackColumnId::SampleRate: return L"Sample Rate";
+    case TrackColumnId::FileSize: return L"File Size";
+    case TrackColumnId::DateModified: return L"Date Modified";
+    }
+    return L"";
+}
+
+TrackColumnConfig* FindTrackColumnConfig(TrackColumnId id)
+{
+    const auto found = std::find_if(
+        trackColumnConfigs.begin(), trackColumnConfigs.end(),
+        [id](const TrackColumnConfig& column) { return column.id == id; });
+    return found == trackColumnConfigs.end() ? nullptr : &*found;
+}
+
+bool IsTrackColumnVisible(TrackColumnId id)
+{
+    const TrackColumnConfig* column = FindTrackColumnConfig(id);
+    return column != nullptr && column->visible;
+}
+
+std::wstring FormatFileSize(std::uint64_t bytes)
+{
+    static constexpr const wchar_t* Units[] = {L"B", L"KB", L"MB", L"GB", L"TB"};
+    double value = static_cast<double>(bytes);
+    std::size_t unit = 0;
+    while (value >= 1024.0 && unit + 1 < std::size(Units))
+    {
+        value /= 1024.0;
+        ++unit;
+    }
+    std::wostringstream text;
+    if (unit == 0)
+        text << static_cast<std::uint64_t>(value);
+    else
+        text << std::fixed << std::setprecision(1) << value;
+    text << L' ' << Units[unit];
+    return text.str();
+}
+
+std::wstring GetTrackColumnDisplayText(const Track& track, TrackColumnId id)
+{
+    switch (id)
+    {
+    case TrackColumnId::Title:
         return track.title.empty() ? track.extinfText : track.title;
-    case 1:
-        return track.artist;
-    case 2:
-        return track.album;
-    case 3:
-        return track.comment;
-    case 4:
+    case TrackColumnId::Artist: return track.artist;
+    case TrackColumnId::Album: return track.album;
+    case TrackColumnId::Duration:
         return track.duration.empty()
             ? FormatDuration(track.extinfDuration)
             : track.duration;
-    case 5:
-        return track.path;
-    default:
-        return L"";
+    case TrackColumnId::Comment: return track.comment;
+    case TrackColumnId::Path: return track.path;
+    case TrackColumnId::TrackNumber: return track.trackNumber;
+    case TrackColumnId::Year: return track.year;
+    case TrackColumnId::Genre: return track.genre;
+    case TrackColumnId::AlbumArtist: return track.albumArtist;
+    case TrackColumnId::DiscNumber: return track.discNumber;
+    case TrackColumnId::Format: return track.format;
+    case TrackColumnId::Bitrate:
+        return track.bitrate < 0 ? L"" :
+            std::to_wstring(track.bitrate) + L" kbps";
+    case TrackColumnId::SampleRate:
+        return track.sampleRate < 0 ? L"" :
+            std::to_wstring(track.sampleRate) + L" Hz";
+    case TrackColumnId::FileSize:
+        return track.hasFileSize ? FormatFileSize(track.fileSize) : L"";
+    case TrackColumnId::DateModified: return track.dateModified;
     }
+    return L"";
 }
 
 void RefreshTrackList(HWND listView, const Playlist& playlist)
@@ -549,12 +624,16 @@ void RefreshTrackList(HWND listView, const Playlist& playlist)
     {
         const int row = static_cast<int>(index);
         const Track& track = playlist.tracks[index];
-        InsertListItem(listView, row, GetTrackDisplayText(track, 0));
-        for (int column = 1; column < static_cast<int>(TrackColumnCount);
-             ++column)
+        if (visibleTrackColumnIds.empty())
+            continue;
+        InsertListItem(listView, row, GetTrackColumnDisplayText(
+            track, visibleTrackColumnIds.front()));
+        for (std::size_t column = 1;
+             column < visibleTrackColumnIds.size(); ++column)
         {
-            SetListItemText(listView, row, column,
-                            GetTrackDisplayText(track, column));
+            SetListItemText(listView, row, static_cast<int>(column),
+                GetTrackColumnDisplayText(track,
+                                          visibleTrackColumnIds[column]));
         }
     }
     isRefreshingTrackList = false;
@@ -614,13 +693,15 @@ std::wstring GetTooltipCellText(HWND listView, int row, int column)
     }
 
     const Playlist* playlist = GetSelectedPlaylist();
-    if (listView != trackListView || playlist == nullptr || column == 4 ||
+    if (listView != trackListView || playlist == nullptr || column < 0 ||
+        column >= static_cast<int>(visibleTrackColumnIds.size()) ||
         row < 0 || row >= static_cast<int>(playlist->tracks.size()))
     {
         return L"";
     }
-    return GetTrackDisplayText(
-        playlist->tracks[static_cast<std::size_t>(row)], column);
+    return GetTrackColumnDisplayText(
+        playlist->tracks[static_cast<std::size_t>(row)],
+        visibleTrackColumnIds[static_cast<std::size_t>(column)]);
 }
 
 std::wstring GetTooltipMeasurementText(HWND listView, int row, int column,
@@ -717,7 +798,7 @@ void UpdateListTooltip(ListTooltipState& state, POINT mousePosition)
         return;
     }
     // For subitem 0, LVIR_BOUNDS can cover the complete row, including all
-    // following subitems. Limit the rectangle to the actual Title column.
+    // following subitems. Limit the rectangle to the actual first column.
     if (state.listView == trackListView && column == 0)
     {
         const int titleColumnWidth =
@@ -1100,6 +1181,8 @@ bool CreateMainMenuBar(HWND window)
 
     AppendMenuW(settingsMenu, MF_STRING, CommandSendToApplications,
                 L"Send To Applications...");
+    AppendMenuW(settingsMenu, MF_STRING, CommandTrackColumns,
+                L"Columns...");
 
     AppendMenuW(menuBar, MF_POPUP,
                 reinterpret_cast<UINT_PTR>(fileMenu), L"&File");
@@ -1523,6 +1606,53 @@ void RestoreTrackSelection(const std::vector<int>& indices)
     }
 }
 
+void SaveCurrentTrackColumnWidths()
+{
+    if (trackListView == nullptr)
+    {
+        return;
+    }
+    for (std::size_t index = 0; index < visibleTrackColumnIds.size(); ++index)
+    {
+        const int width = ListView_GetColumnWidth(
+            trackListView, static_cast<int>(index));
+        TrackColumnConfig* config = FindTrackColumnConfig(
+            visibleTrackColumnIds[index]);
+        if (config != nullptr && width >= 24 && width <= 4096)
+        {
+            config->width = width;
+        }
+    }
+}
+
+void RebuildTrackListColumns()
+{
+    if (trackListView == nullptr)
+    {
+        return;
+    }
+    SaveCurrentTrackColumnWidths();
+    const std::vector<int> selectedIndices =
+        GetSelectedTrackIndices(trackListView);
+    while (ListView_DeleteColumn(trackListView, 0))
+    {
+    }
+    visibleTrackColumnIds.clear();
+    for (const TrackColumnConfig& config : trackColumnConfigs)
+    {
+        if (!config.visible)
+        {
+            continue;
+        }
+        const int index = static_cast<int>(visibleTrackColumnIds.size());
+        const std::wstring name = GetTrackColumnName(config.id);
+        InsertColumn(trackListView, index, name.c_str(), config.width);
+        visibleTrackColumnIds.push_back(config.id);
+    }
+    RefreshSelectedTrackList();
+    RestoreTrackSelection(selectedIndices);
+}
+
 bool AreIndicesContiguous(const std::vector<int>& indices)
 {
     if (indices.empty())
@@ -1696,6 +1826,23 @@ void GetMetadataForSelectedTracks()
         return;
     }
 
+    MetadataRequest request{};
+    request.title = IsTrackColumnVisible(TrackColumnId::Title);
+    request.artist = IsTrackColumnVisible(TrackColumnId::Artist);
+    request.album = IsTrackColumnVisible(TrackColumnId::Album);
+    request.comment = IsTrackColumnVisible(TrackColumnId::Comment);
+    request.trackNumber = IsTrackColumnVisible(TrackColumnId::TrackNumber);
+    request.year = IsTrackColumnVisible(TrackColumnId::Year);
+    request.genre = IsTrackColumnVisible(TrackColumnId::Genre);
+    request.albumArtist = IsTrackColumnVisible(TrackColumnId::AlbumArtist);
+    request.discNumber = IsTrackColumnVisible(TrackColumnId::DiscNumber);
+    request.duration = IsTrackColumnVisible(TrackColumnId::Duration);
+    request.format = IsTrackColumnVisible(TrackColumnId::Format);
+    request.bitrate = IsTrackColumnVisible(TrackColumnId::Bitrate);
+    request.sampleRate = IsTrackColumnVisible(TrackColumnId::SampleRate);
+    request.fileSize = IsTrackColumnVisible(TrackColumnId::FileSize);
+    request.dateModified = IsTrackColumnVisible(TrackColumnId::DateModified);
+
     bool updatedAnyTrack = false;
     for (const int index : selectedIndices)
     {
@@ -1703,7 +1850,8 @@ void GetMetadataForSelectedTracks()
         {
             updatedAnyTrack =
                 UpdateTrackMetadata(
-                    playlist->tracks[static_cast<std::size_t>(index)]) ||
+                    playlist->tracks[static_cast<std::size_t>(index)],
+                    request) ||
                 updatedAnyTrack;
         }
     }
@@ -3998,6 +4146,245 @@ void ShowSendToApplications(HWND owner)
     }
 }
 
+void UpdateTrackColumnsButtons()
+{
+    const int selected = trackColumnsList == nullptr ? -1 :
+        ListView_GetNextItem(trackColumnsList, -1, LVNI_SELECTED);
+    EnableWindow(trackColumnsUpButton, selected > 0);
+    EnableWindow(trackColumnsDownButton,
+                 selected >= 0 &&
+                 selected + 1 < static_cast<int>(trackColumnConfigs.size()));
+}
+
+void RefreshTrackColumnsSettingsList(int selectedIndex = -1)
+{
+    if (trackColumnsList == nullptr)
+    {
+        return;
+    }
+    isRefreshingTrackColumns = true;
+    ListView_DeleteAllItems(trackColumnsList);
+    for (std::size_t index = 0; index < trackColumnConfigs.size(); ++index)
+    {
+        const TrackColumnConfig& config = trackColumnConfigs[index];
+        InsertListItem(trackColumnsList, static_cast<int>(index),
+                       GetTrackColumnName(config.id));
+        ListView_SetCheckState(trackColumnsList, static_cast<int>(index),
+                               config.visible ? TRUE : FALSE);
+    }
+    if (selectedIndex >= 0 &&
+        selectedIndex < static_cast<int>(trackColumnConfigs.size()))
+    {
+        ListView_SetItemState(trackColumnsList, selectedIndex,
+                              LVIS_SELECTED | LVIS_FOCUSED,
+                              LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(trackColumnsList, selectedIndex, FALSE);
+    }
+    isRefreshingTrackColumns = false;
+    UpdateTrackColumnsButtons();
+}
+
+void MoveTrackColumnSetting(int direction)
+{
+    const int selected = ListView_GetNextItem(
+        trackColumnsList, -1, LVNI_SELECTED);
+    const int destination = selected + direction;
+    if (selected < 0 || destination < 0 ||
+        destination >= static_cast<int>(trackColumnConfigs.size()))
+    {
+        return;
+    }
+    SaveCurrentTrackColumnWidths();
+    std::swap(trackColumnConfigs[static_cast<std::size_t>(selected)],
+              trackColumnConfigs[static_cast<std::size_t>(destination)]);
+    RefreshTrackColumnsSettingsList(destination);
+    RebuildTrackListColumns();
+    MarkAppStateDirty();
+}
+
+void LayoutTrackColumnsWindow(HWND window)
+{
+    RECT client{};
+    GetClientRect(window, &client);
+    constexpr int margin = 12;
+    constexpr int buttonWidth = 74;
+    constexpr int buttonHeight = 28;
+    constexpr int gap = 8;
+    const int clientRight = static_cast<int>(client.right);
+    const int clientBottom = static_cast<int>(client.bottom);
+    const int rightX = std::max(margin, clientRight - margin - buttonWidth);
+    const int listWidth = std::max(120, rightX - margin - gap);
+    const int listHeight = std::max(80, clientBottom - margin * 2);
+    MoveWindow(trackColumnsList, margin, margin, listWidth, listHeight, TRUE);
+    if (trackColumnsList != nullptr)
+    {
+        ListView_SetColumnWidth(trackColumnsList, 0,
+                                std::max(80, listWidth - 4));
+    }
+    MoveWindow(trackColumnsUpButton, rightX, margin, buttonWidth,
+               buttonHeight, TRUE);
+    MoveWindow(trackColumnsDownButton, rightX, margin + buttonHeight + gap,
+               buttonWidth, buttonHeight, TRUE);
+    MoveWindow(trackColumnsCloseButton, rightX,
+               std::max(margin, clientBottom - margin - buttonHeight),
+               buttonWidth, buttonHeight, TRUE);
+}
+
+LRESULT CALLBACK TrackColumnsWindowProcedure(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_CREATE:
+    {
+        const HINSTANCE instance =
+            reinterpret_cast<LPCREATESTRUCTW>(lParam)->hInstance;
+        trackColumnsList = CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+            WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL |
+                LVS_SHOWSELALWAYS | LVS_NOCOLUMNHEADER,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(TrackColumnsListId), instance, nullptr);
+        trackColumnsUpButton = CreateWindowExW(
+            0, WC_BUTTONW, L"\u2191",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(TrackColumnsUpButtonId), instance, nullptr);
+        trackColumnsDownButton = CreateWindowExW(
+            0, WC_BUTTONW, L"\u2193",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(TrackColumnsDownButtonId), instance, nullptr);
+        trackColumnsCloseButton = CreateWindowExW(
+            0, WC_BUTTONW, L"Close",
+            WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(TrackColumnsCloseButtonId), instance, nullptr);
+        if (trackColumnsList == nullptr || trackColumnsUpButton == nullptr ||
+            trackColumnsDownButton == nullptr ||
+            trackColumnsCloseButton == nullptr)
+        {
+            return -1;
+        }
+        ListView_SetExtendedListViewStyle(
+            trackColumnsList, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT |
+                                  LVS_EX_DOUBLEBUFFER);
+        InsertColumn(trackColumnsList, 0, L"Column", 250);
+        RefreshTrackColumnsSettingsList();
+        LayoutTrackColumnsWindow(window);
+        return 0;
+    }
+    case WM_SIZE:
+        LayoutTrackColumnsWindow(window);
+        return 0;
+    case WM_COMMAND:
+        switch (LOWORD(wParam))
+        {
+        case TrackColumnsUpButtonId:
+            MoveTrackColumnSetting(-1);
+            return 0;
+        case TrackColumnsDownButtonId:
+            MoveTrackColumnSetting(1);
+            return 0;
+        case TrackColumnsCloseButtonId:
+            SendMessageW(window, WM_CLOSE, 0, 0);
+            return 0;
+        }
+        break;
+    case WM_NOTIFY:
+    {
+        const NMHDR* header = reinterpret_cast<NMHDR*>(lParam);
+        if (header->hwndFrom == trackColumnsList &&
+            header->code == LVN_ITEMCHANGED && !isRefreshingTrackColumns)
+        {
+            const NMLISTVIEW* change = reinterpret_cast<NMLISTVIEW*>(lParam);
+            if ((change->uChanged & LVIF_STATE) != 0 &&
+                ((change->uOldState ^ change->uNewState) &
+                 LVIS_STATEIMAGEMASK) != 0 &&
+                change->iItem >= 0 &&
+                change->iItem < static_cast<int>(trackColumnConfigs.size()))
+            {
+                TrackColumnConfig& config = trackColumnConfigs[
+                    static_cast<std::size_t>(change->iItem)];
+                bool checked = ListView_GetCheckState(
+                    trackColumnsList, change->iItem) != FALSE;
+                if (config.id == TrackColumnId::Title && !checked)
+                {
+                    isRefreshingTrackColumns = true;
+                    ListView_SetCheckState(trackColumnsList, change->iItem,
+                                           TRUE);
+                    isRefreshingTrackColumns = false;
+                }
+                else if (config.visible != checked)
+                {
+                    SaveCurrentTrackColumnWidths();
+                    config.visible = checked;
+                    RebuildTrackListColumns();
+                    MarkAppStateDirty();
+                }
+            }
+            UpdateTrackColumnsButtons();
+            return 0;
+        }
+        break;
+    }
+    case WM_CLOSE:
+        DestroyWindow(window);
+        return 0;
+    case WM_DESTROY:
+        trackColumnsWindow = nullptr;
+        trackColumnsList = nullptr;
+        trackColumnsUpButton = nullptr;
+        trackColumnsDownButton = nullptr;
+        trackColumnsCloseButton = nullptr;
+        if (mainWindow != nullptr)
+        {
+            EnableWindow(mainWindow, TRUE);
+            SetForegroundWindow(mainWindow);
+        }
+        return 0;
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+void ShowTrackColumns(HWND owner)
+{
+    if (trackColumnsWindow != nullptr)
+    {
+        SetForegroundWindow(trackColumnsWindow);
+        return;
+    }
+    RECT ownerRect{};
+    GetWindowRect(owner, &ownerRect);
+    constexpr int width = 430;
+    constexpr int height = 510;
+    trackColumnsWindow = CreateWindowExW(
+        WS_EX_DLGMODALFRAME, TrackColumnsWindowClassName, L"Track Columns",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
+        ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2,
+        ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2,
+        width, height, owner, nullptr,
+        reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(owner, GWLP_HINSTANCE)),
+        nullptr);
+    if (trackColumnsWindow == nullptr)
+    {
+        return;
+    }
+    EnableWindow(owner, FALSE);
+    ShowWindow(trackColumnsWindow, SW_SHOW);
+    UpdateWindow(trackColumnsWindow);
+    MSG message{};
+    while (IsWindow(trackColumnsWindow) &&
+           GetMessageW(&message, nullptr, 0, 0) > 0)
+    {
+        if (!IsDialogMessageW(trackColumnsWindow, &message))
+        {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+}
+
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
                                  WPARAM wParam, LPARAM lParam)
 {
@@ -4049,14 +4436,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         ListView_SetExtendedListViewStyle(
             trackListView, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
         InsertColumn(playlistListView, 0, L"Playlist", splitterX);
-        InsertColumn(trackListView, 0, L"Title", trackColumnWidths[0]);
-        InsertColumn(trackListView, 1, L"Artist", trackColumnWidths[1]);
-        InsertColumn(trackListView, 2, L"Album", trackColumnWidths[2]);
-        InsertColumn(trackListView, 3, L"Comment", trackColumnWidths[3]);
-        InsertColumn(trackListView, 4, L"Duration", trackColumnWidths[4]);
-        InsertColumn(trackListView, 5, L"Path", trackColumnWidths[5]);
         RefreshPlaylistList(playlistListView);
-        RefreshSelectedTrackList();
+        RebuildTrackListColumns();
         DragAcceptFiles(window, TRUE);
         SetTimer(window, AppStateTimerId, AppStateTimerIntervalMs, nullptr);
         return 0;
@@ -4087,6 +4468,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             return 0;
         case CommandSendToApplications:
             ShowSendToApplications(window);
+            return 0;
+        case CommandTrackColumns:
+            ShowTrackColumns(window);
             return 0;
         case CommandNewPlaylist:
             CreateNewPlaylist();
@@ -4132,6 +4516,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             (header->code == HDN_ENDTRACKW ||
              header->code == HDN_ENDTRACKA))
         {
+            SaveCurrentTrackColumnWidths();
             MarkAppStateDirty();
             return 0;
         }
@@ -4571,6 +4956,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         MessageBoxW(nullptr,
                     L"The Send To editor window class could not be "
                     L"registered.",
+                    WindowTitle, MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
+    WNDCLASSEXW trackColumnsClass = windowClass;
+    trackColumnsClass.lpfnWndProc = TrackColumnsWindowProcedure;
+    trackColumnsClass.lpszClassName = TrackColumnsWindowClassName;
+    trackColumnsClass.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
+    if (!RegisterClassExW(&trackColumnsClass))
+    {
+        MessageBoxW(nullptr,
+                    L"The Track Columns window class could not be registered.",
                     WindowTitle, MB_OK | MB_ICONERROR);
         return 1;
     }

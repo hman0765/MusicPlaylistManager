@@ -1,16 +1,42 @@
 #pragma once
 
-#include <array>
 #include <filesystem>
 #include <vector>
 
 #include "playlist.h"
 
-inline constexpr std::size_t TrackColumnCount = 6;
 inline constexpr std::size_t MaximumSendToApplications = 10;
-inline constexpr std::array<int, TrackColumnCount> DefaultTrackColumnWidths = {
-    180, 140, 160, 180, 85, 240
+
+enum class TrackColumnId
+{
+    Title,
+    Artist,
+    Album,
+    Duration,
+    Comment,
+    Path,
+    TrackNumber,
+    Year,
+    Genre,
+    AlbumArtist,
+    DiscNumber,
+    Format,
+    Bitrate,
+    SampleRate,
+    FileSize,
+    DateModified
 };
+
+struct TrackColumnConfig
+{
+    TrackColumnId id = TrackColumnId::Title;
+    bool visible = false;
+    int width = 100;
+};
+
+std::vector<TrackColumnConfig> MakeDefaultTrackColumnConfigs();
+const wchar_t* GetTrackColumnIdName(TrackColumnId id);
+bool TryParseTrackColumnId(const std::wstring& name, TrackColumnId& id);
 
 struct SendToApplication
 {
@@ -34,8 +60,8 @@ struct AppState
     bool hasWindowPosition = false;
     int windowWidth = 900;
     int windowHeight = 600;
-    std::array<int, TrackColumnCount> trackColumnWidths =
-        DefaultTrackColumnWidths;
+    std::vector<TrackColumnConfig> trackColumns =
+        MakeDefaultTrackColumnConfigs();
 };
 
 enum class AppStateLoadResult

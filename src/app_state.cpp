@@ -14,6 +14,52 @@
 #include <string>
 #include <utility>
 
+std::vector<TrackColumnConfig> MakeDefaultTrackColumnConfigs()
+{
+    return {
+        {TrackColumnId::Title, true, 180},
+        {TrackColumnId::Artist, true, 140},
+        {TrackColumnId::Album, true, 160},
+        {TrackColumnId::Duration, true, 85},
+        {TrackColumnId::Comment, false, 180},
+        {TrackColumnId::Path, false, 240},
+        {TrackColumnId::TrackNumber, false, 90},
+        {TrackColumnId::Year, false, 75},
+        {TrackColumnId::Genre, false, 140},
+        {TrackColumnId::AlbumArtist, false, 160},
+        {TrackColumnId::DiscNumber, false, 90},
+        {TrackColumnId::Format, false, 80},
+        {TrackColumnId::Bitrate, false, 95},
+        {TrackColumnId::SampleRate, false, 110},
+        {TrackColumnId::FileSize, false, 100},
+        {TrackColumnId::DateModified, false, 145}
+    };
+}
+
+const wchar_t* GetTrackColumnIdName(TrackColumnId id)
+{
+    static constexpr const wchar_t* Names[] = {
+        L"title", L"artist", L"album", L"duration", L"comment", L"path",
+        L"trackNumber", L"year", L"genre", L"albumArtist", L"discNumber",
+        L"format", L"bitrate", L"sampleRate", L"fileSize", L"dateModified"
+    };
+    const auto index = static_cast<std::size_t>(id);
+    return index < std::size(Names) ? Names[index] : L"";
+}
+
+bool TryParseTrackColumnId(const std::wstring& name, TrackColumnId& id)
+{
+    for (const TrackColumnConfig& config : MakeDefaultTrackColumnConfigs())
+    {
+        if (name == GetTrackColumnIdName(config.id))
+        {
+            id = config.id;
+            return true;
+        }
+    }
+    return false;
+}
+
 namespace
 {
 constexpr std::uintmax_t MaximumStateFileSize = 128ULL * 1024ULL * 1024ULL;
@@ -151,7 +197,23 @@ void AppendTrackJson(std::wstring& output, const Track& track, int indent)
     appendStringField(L"extinfText", track.extinfText, true);
     AppendIndent(output, indent + 1);
     output += L"\"extinfDuration\": " +
-              std::to_wstring(track.extinfDuration) + L"\n";
+              std::to_wstring(track.extinfDuration) + L",\n";
+    appendStringField(L"trackNumber", track.trackNumber, true);
+    appendStringField(L"year", track.year, true);
+    appendStringField(L"genre", track.genre, true);
+    appendStringField(L"albumArtist", track.albumArtist, true);
+    appendStringField(L"discNumber", track.discNumber, true);
+    appendStringField(L"format", track.format, true);
+    AppendIndent(output, indent + 1);
+    output += L"\"bitrate\": " + std::to_wstring(track.bitrate) + L",\n";
+    AppendIndent(output, indent + 1);
+    output += L"\"sampleRate\": " + std::to_wstring(track.sampleRate) + L",\n";
+    AppendIndent(output, indent + 1);
+    output += L"\"fileSize\": " + std::to_wstring(track.fileSize) + L",\n";
+    AppendIndent(output, indent + 1);
+    output += L"\"hasFileSize\": ";
+    output += track.hasFileSize ? L"true,\n" : L"false,\n";
+    appendStringField(L"dateModified", track.dateModified, false);
     AppendIndent(output, indent);
     output += L"}";
 }
@@ -245,14 +307,21 @@ std::wstring SerializeState(const AppState& state)
               std::to_wstring(state.windowWidth) + L",\n";
     output += L"    \"windowHeight\": " +
               std::to_wstring(state.windowHeight) + L",\n";
-    output += L"    \"trackColumnWidths\": [";
-    for (std::size_t index = 0; index < state.trackColumnWidths.size(); ++index)
+    output += L"    \"trackColumns\": [";
+    if (!state.trackColumns.empty())
     {
-        if (index > 0)
+        output += L"\n";
+        for (std::size_t index = 0; index < state.trackColumns.size(); ++index)
         {
-            output += L", ";
+            const TrackColumnConfig& column = state.trackColumns[index];
+            output += L"      {\"id\": ";
+            AppendJsonString(output, GetTrackColumnIdName(column.id));
+            output += L", \"visible\": ";
+            output += column.visible ? L"true" : L"false";
+            output += L", \"width\": " + std::to_wstring(column.width) + L"}";
+            output += index + 1 < state.trackColumns.size() ? L",\n" : L"\n";
         }
-        output += std::to_wstring(state.trackColumnWidths[index]);
+        output += L"    ";
     }
     output += L"]\n";
     output += L"  },\n";
@@ -635,6 +704,23 @@ Track ReadTrack(JsonReader& reader)
         else if (name == L"path") { track.path = reader.ReadString(); fields |= 1U << 5; }
         else if (name == L"extinfText") { track.extinfText = reader.ReadString(); fields |= 1U << 6; }
         else if (name == L"extinfDuration") { track.extinfDuration = ReadInt(reader); fields |= 1U << 7; }
+        else if (name == L"trackNumber") { track.trackNumber = reader.ReadString(); }
+        else if (name == L"year") { track.year = reader.ReadString(); }
+        else if (name == L"genre") { track.genre = reader.ReadString(); }
+        else if (name == L"albumArtist") { track.albumArtist = reader.ReadString(); }
+        else if (name == L"discNumber") { track.discNumber = reader.ReadString(); }
+        else if (name == L"format") { track.format = reader.ReadString(); }
+        else if (name == L"bitrate") { track.bitrate = ReadInt(reader); }
+        else if (name == L"sampleRate") { track.sampleRate = ReadInt(reader); }
+        else if (name == L"fileSize")
+        {
+            const long long value = reader.ReadInteger();
+            if (value < 0)
+                throw std::runtime_error("Invalid file size.");
+            track.fileSize = static_cast<std::uint64_t>(value);
+        }
+        else if (name == L"hasFileSize") { track.hasFileSize = reader.ReadBoolean(); }
+        else if (name == L"dateModified") { track.dateModified = reader.ReadString(); }
         else reader.SkipValue();
     });
     if (fields != 0xFFU)
@@ -642,6 +728,76 @@ Track ReadTrack(JsonReader& reader)
         throw std::runtime_error("Track state is incomplete.");
     }
     return track;
+}
+
+bool ReadTrackColumn(JsonReader& reader, TrackColumnConfig& column)
+{
+    std::wstring idName;
+    int width = 100;
+    bool visible = false;
+    unsigned int fields = 0;
+    reader.ReadObject([&](const std::wstring& name) {
+        if (name == L"id") { idName = reader.ReadString(); fields |= 1U; }
+        else if (name == L"visible") { visible = reader.ReadBoolean(); fields |= 2U; }
+        else if (name == L"width") { width = ReadInt(reader); fields |= 4U; }
+        else reader.SkipValue();
+    });
+    TrackColumnId id{};
+    if (fields != 7U || !TryParseTrackColumnId(idName, id))
+    {
+        return false;
+    }
+    const auto defaults = MakeDefaultTrackColumnConfigs();
+    const auto found = std::find_if(defaults.begin(), defaults.end(),
+        [id](const TrackColumnConfig& item) { return item.id == id; });
+    column = found == defaults.end() ? TrackColumnConfig{id, false, 100}
+                                     : *found;
+    column.visible = visible;
+    if (width >= 24 && width <= 4096)
+    {
+        column.width = width;
+    }
+    return true;
+}
+
+void NormalizeTrackColumns(std::vector<TrackColumnConfig>& columns)
+{
+    std::vector<TrackColumnConfig> normalized;
+    for (const TrackColumnConfig& column : columns)
+    {
+        TrackColumnId parsedId{};
+        const bool known = TryParseTrackColumnId(
+            GetTrackColumnIdName(column.id), parsedId) &&
+            parsedId == column.id;
+        const bool duplicate = std::any_of(
+            normalized.begin(), normalized.end(),
+            [&column](const TrackColumnConfig& item) {
+                return item.id == column.id;
+            });
+        if (known && !duplicate)
+        {
+            normalized.push_back(column);
+        }
+    }
+    for (const TrackColumnConfig& defaultColumn :
+         MakeDefaultTrackColumnConfigs())
+    {
+        if (std::none_of(normalized.begin(), normalized.end(),
+            [&defaultColumn](const TrackColumnConfig& item) {
+                return item.id == defaultColumn.id;
+            }))
+        {
+            normalized.push_back(defaultColumn);
+        }
+    }
+    for (TrackColumnConfig& column : normalized)
+    {
+        if (column.id == TrackColumnId::Title)
+        {
+            column.visible = true;
+        }
+    }
+    columns = std::move(normalized);
 }
 
 Playlist ReadPlaylist(JsonReader& reader)
@@ -712,6 +868,7 @@ bool ReadSendToApplication(JsonReader& reader,
 void ReadGui(JsonReader& reader, AppState& state)
 {
     unsigned int fields = 0;
+    bool readNewColumns = false;
     reader.ReadObject([&](const std::wstring& name) {
         if (name == L"splitterX") { state.splitterX = ReadInt(reader); fields |= 1U << 0; }
         else if (name == L"windowWidth") { state.windowWidth = ReadInt(reader); fields |= 1U << 1; }
@@ -724,33 +881,48 @@ void ReadGui(JsonReader& reader, AppState& state)
             reader.ReadArray([&]() {
                 savedWidths.push_back(ReadInt(reader));
             });
-            const auto validWidth = [](int width, std::size_t column) {
-                return width >= 24 && width <= 4096
-                    ? width
-                    : DefaultTrackColumnWidths[column];
-            };
-            if (savedWidths.size() == TrackColumnCount)
+            if (!readNewColumns && (savedWidths.size() == 5 ||
+                                    savedWidths.size() == 6))
             {
-                for (std::size_t index = 0; index < TrackColumnCount; ++index)
+                const TrackColumnId legacyIds[] = {
+                    TrackColumnId::Title, TrackColumnId::Artist,
+                    TrackColumnId::Album, TrackColumnId::Comment,
+                    TrackColumnId::Duration, TrackColumnId::Path
+                };
+                const TrackColumnId fiveIds[] = {
+                    TrackColumnId::Title, TrackColumnId::Artist,
+                    TrackColumnId::Album, TrackColumnId::Duration,
+                    TrackColumnId::Path
+                };
+                auto& columns = state.trackColumns;
+                for (std::size_t index = 0; index < savedWidths.size(); ++index)
                 {
-                    state.trackColumnWidths[index] =
-                        validWidth(savedWidths[index], index);
+                    const TrackColumnId id = savedWidths.size() == 6
+                        ? legacyIds[index] : fiveIds[index];
+                    const auto found = std::find_if(
+                        columns.begin(), columns.end(),
+                        [id](const TrackColumnConfig& item) {
+                            return item.id == id;
+                        });
+                    if (found != columns.end() && savedWidths[index] >= 24 &&
+                        savedWidths[index] <= 4096)
+                    {
+                        found->width = savedWidths[index];
+                    }
                 }
             }
-            else if (savedWidths.size() == 5)
-            {
-                state.trackColumnWidths[0] = validWidth(savedWidths[0], 0);
-                state.trackColumnWidths[1] = validWidth(savedWidths[1], 1);
-                state.trackColumnWidths[2] = validWidth(savedWidths[2], 2);
-                state.trackColumnWidths[3] = DefaultTrackColumnWidths[3];
-                state.trackColumnWidths[4] = validWidth(savedWidths[3], 4);
-                state.trackColumnWidths[5] = validWidth(savedWidths[4], 5);
-            }
-            else
-            {
-                state.trackColumnWidths = DefaultTrackColumnWidths;
-            }
-            fields |= 1U << 5;
+        }
+        else if (name == L"trackColumns")
+        {
+            std::vector<TrackColumnConfig> columns;
+            reader.ReadArray([&]() {
+                TrackColumnConfig column{};
+                if (ReadTrackColumn(reader, column))
+                    columns.push_back(column);
+            });
+            state.trackColumns = std::move(columns);
+            NormalizeTrackColumns(state.trackColumns);
+            readNewColumns = true;
         }
         else reader.SkipValue();
     });
@@ -759,6 +931,7 @@ void ReadGui(JsonReader& reader, AppState& state)
         throw std::runtime_error("GUI state is incomplete.");
     }
     state.hasWindowPosition = (fields & 0x18U) == 0x18U;
+    NormalizeTrackColumns(state.trackColumns);
 }
 
 AppState DeserializeState(const std::wstring& text)

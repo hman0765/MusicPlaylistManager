@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -70,6 +71,36 @@ struct Track
     std::wstring path;
     std::wstring extinfText;
     int extinfDuration = -1;
+    std::wstring trackNumber;
+    std::wstring year;
+    std::wstring genre;
+    std::wstring albumArtist;
+    std::wstring discNumber;
+    std::wstring format;
+    int bitrate = -1;
+    int sampleRate = -1;
+    std::uint64_t fileSize = 0;
+    bool hasFileSize = false;
+    std::wstring dateModified;
+};
+
+struct MetadataRequest
+{
+    bool title = false;
+    bool artist = false;
+    bool album = false;
+    bool comment = false;
+    bool trackNumber = false;
+    bool year = false;
+    bool genre = false;
+    bool albumArtist = false;
+    bool discNumber = false;
+    bool duration = false;
+    bool format = false;
+    bool bitrate = false;
+    bool sampleRate = false;
+    bool fileSize = false;
+    bool dateModified = false;
 };
 
 struct Playlist
@@ -85,6 +116,7 @@ bool IsSupportedAudioPath(const std::wstring& path);
 bool IsM3U8Path(const std::wstring& path);
 Track CreateTrackFromFile(const std::wstring& path);
 bool UpdateTrackMetadata(Track& track);
+bool UpdateTrackMetadata(Track& track, const MetadataRequest& request);
 Playlist LoadM3U8(const std::wstring& filePath);
 void SaveM3U8(const Playlist& playlist, const std::wstring& filePath);
 std::wstring BuildExtinfText(const Track& track);

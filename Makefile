@@ -20,13 +20,14 @@ all: $(TARGET)
 $(TARGET): $(OBJECTS) $(TAGLIB_LIB)
 	$(CXX) $(LDFLAGS) $(OBJECTS) -o $@ $(LDLIBS)
 
-build/main.o: src/main.cpp src/playlist.h | build
+build/main.o: src/main.cpp src/app_state.h src/playlist.h src/drag_drop.h | build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 build/playlist.o: src/playlist.cpp src/playlist.h \
 	$(TAGLIB_ROOT)/taglib/fileref.h \
 	$(TAGLIB_ROOT)/taglib/tag.h \
-	$(TAGLIB_ROOT)/taglib/audioproperties.h | build
+	$(TAGLIB_ROOT)/taglib/audioproperties.h \
+	$(TAGLIB_ROOT)/taglib/toolkit/tpropertymap.h | build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 build/app_state.o: src/app_state.cpp src/app_state.h src/playlist.h | build
