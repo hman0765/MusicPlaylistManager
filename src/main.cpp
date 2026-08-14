@@ -50,6 +50,8 @@ constexpr UINT CommandImportPlaylist = 1010;
 constexpr UINT CommandExit = 1011;
 constexpr UINT CommandOrganizePlaylists = 1012;
 constexpr UINT CommandSendToApplications = 1013;
+constexpr UINT SendToApplicationCommandBase = 12000;
+constexpr UINT MaximumWindowsCommandLineLength = 32767;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
 constexpr UINT MessagePreparePlaylistLabelEdit = WM_APP + 2;
 constexpr UINT MessageTogglePlaylistGroup = WM_APP + 3;
@@ -85,6 +87,7 @@ HWND trackTooltip = nullptr;
 HMENU fileMenu = nullptr;
 HMENU playlistMenu = nullptr;
 HMENU trackMenu = nullptr;
+HMENU trackSendToMenu = nullptr;
 HMENU settingsMenu = nullptr;
 HWND organizerWindow = nullptr;
 HWND organizerGroupList = nullptr;
@@ -166,6 +169,7 @@ constexpr UINT_PTR PlaylistTooltipSubclassId = 1;
 constexpr UINT_PTR TrackTooltipSubclassId = 2;
 
 void ResetListTooltip(ListTooltipState& state);
+bool IsValidSendToArguments(const std::wstring& arguments);
 void ShowPlaylistOrganizer(HWND owner);
 void ShowSendToApplications(HWND owner);
 LRESULT CALLBACK PlaylistOrganizerWindowProcedure(
@@ -1001,6 +1005,24 @@ void UpdateMainMenuState()
     SetMenuCommandEnabled(trackMenu, CommandShowTrackProperties,
                           canUseShellOperations);
     SetMenuCommandEnabled(trackMenu, CommandDeleteTracks, hasTracks);
+
+    if (trackSendToMenu != nullptr)
+    {
+        while (GetMenuItemCount(trackSendToMenu) > 0)
+        {
+            DeleteMenu(trackSendToMenu, 0, MF_BYPOSITION);
+        }
+        for (std::size_t index = 0; index < sendToApplications.size(); ++index)
+        {
+            AppendMenuW(trackSendToMenu, MF_STRING,
+                        SendToApplicationCommandBase +
+                            static_cast<UINT>(index),
+                        sendToApplications[index].name.c_str());
+        }
+        EnableMenuItem(trackMenu, 3, MF_BYPOSITION |
+            (hasTracks && !sendToApplications.empty()
+                ? MF_ENABLED : MF_GRAYED));
+    }
 }
 
 bool CreateMainMenuBar(HWND window)
@@ -1009,19 +1031,22 @@ bool CreateMainMenuBar(HWND window)
     fileMenu = CreatePopupMenu();
     playlistMenu = CreatePopupMenu();
     trackMenu = CreatePopupMenu();
+    trackSendToMenu = CreatePopupMenu();
     settingsMenu = CreatePopupMenu();
     if (menuBar == nullptr || fileMenu == nullptr ||
         playlistMenu == nullptr || trackMenu == nullptr ||
-        settingsMenu == nullptr)
+        trackSendToMenu == nullptr || settingsMenu == nullptr)
     {
         if (menuBar != nullptr) DestroyMenu(menuBar);
         if (fileMenu != nullptr) DestroyMenu(fileMenu);
         if (playlistMenu != nullptr) DestroyMenu(playlistMenu);
         if (trackMenu != nullptr) DestroyMenu(trackMenu);
+        if (trackSendToMenu != nullptr) DestroyMenu(trackSendToMenu);
         if (settingsMenu != nullptr) DestroyMenu(settingsMenu);
         fileMenu = nullptr;
         playlistMenu = nullptr;
         trackMenu = nullptr;
+        trackSendToMenu = nullptr;
         settingsMenu = nullptr;
         return false;
     }
@@ -1051,6 +1076,8 @@ bool CreateMainMenuBar(HWND window)
                 L"Open in Explorer");
     AppendMenuW(trackMenu, MF_STRING, CommandShowTrackProperties,
                 L"Properties");
+    AppendMenuW(trackMenu, MF_POPUP,
+                reinterpret_cast<UINT_PTR>(trackSendToMenu), L"Send to");
     AppendMenuW(trackMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(trackMenu, MF_STRING, CommandDeleteTracks, L"Delete");
 
@@ -1072,6 +1099,7 @@ bool CreateMainMenuBar(HWND window)
         fileMenu = nullptr;
         playlistMenu = nullptr;
         trackMenu = nullptr;
+        trackSendToMenu = nullptr;
         settingsMenu = nullptr;
         return false;
     }
@@ -1088,6 +1116,191 @@ bool IsUsableTrackFile(const std::wstring& path)
     std::error_code error;
     return std::filesystem::is_regular_file(std::filesystem::path(path), error) &&
            !error;
+}
+
+std::wstring QuoteWindowsCommandLineArgument(const std::wstring& value)
+{
+    std::wstring quoted = L"\"";
+    std::size_t backslashCount = 0;
+    for (const wchar_t character : value)
+    {
+        if (character == L'\\')
+        {
+            ++backslashCount;
+            continue;
+        }
+        if (character == L'\"')
+        {
+            quoted.append(backslashCount * 2 + 1, L'\\');
+            quoted += L'\"';
+        }
+        else
+        {
+            quoted.append(backslashCount, L'\\');
+            quoted += character;
+        }
+        backslashCount = 0;
+    }
+    quoted.append(backslashCount * 2, L'\\');
+    quoted += L'\"';
+    return quoted;
+}
+
+std::wstring BuildSendToFilesArgument(
+    const std::vector<std::wstring>& paths)
+{
+    std::wstring arguments;
+    for (const std::wstring& path : paths)
+    {
+        if (!arguments.empty())
+        {
+            arguments += L' ';
+        }
+        arguments += QuoteWindowsCommandLineArgument(path);
+    }
+    return arguments;
+}
+
+bool ExpandSendToArguments(const std::wstring& argumentsTemplate,
+                           const std::vector<std::wstring>& paths,
+                           std::wstring& expandedArguments)
+{
+    constexpr wchar_t placeholder[] = L"%files%";
+    constexpr std::size_t placeholderLength = 7;
+    const std::wstring fileArguments = BuildSendToFilesArgument(paths);
+    std::size_t searchPosition = 0;
+    std::size_t placeholderPosition =
+        argumentsTemplate.find(placeholder, searchPosition);
+    if (placeholderPosition == std::wstring::npos)
+    {
+        return false;
+    }
+
+    expandedArguments.clear();
+    while (placeholderPosition != std::wstring::npos)
+    {
+        expandedArguments.append(argumentsTemplate, searchPosition,
+                                 placeholderPosition - searchPosition);
+        expandedArguments += fileArguments;
+        searchPosition = placeholderPosition + placeholderLength;
+        placeholderPosition = argumentsTemplate.find(
+            placeholder, searchPosition);
+    }
+    expandedArguments.append(argumentsTemplate, searchPosition,
+                             std::wstring::npos);
+    return true;
+}
+
+void ShowSendToFailure(HWND owner, const SendToApplication& application,
+                       const std::wstring& detail = L"")
+{
+    std::wstring message = L"Failed to send tracks to \"" +
+        application.name + L"\".";
+    if (!detail.empty())
+    {
+        message += L"\n\n" + detail;
+    }
+    MessageBoxW(owner, message.c_str(), WindowTitle,
+                MB_OK | MB_ICONERROR);
+}
+
+std::wstring GetWindowsErrorMessage(DWORD errorCode)
+{
+    wchar_t* buffer = nullptr;
+    const DWORD length = FormatMessageW(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+            FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr, errorCode, 0, reinterpret_cast<LPWSTR>(&buffer), 0,
+        nullptr);
+    std::wstring message;
+    if (length > 0 && buffer != nullptr)
+    {
+        message.assign(buffer, length);
+        while (!message.empty() &&
+               (message.back() == L'\r' || message.back() == L'\n'))
+        {
+            message.pop_back();
+        }
+    }
+    if (buffer != nullptr)
+    {
+        LocalFree(buffer);
+    }
+    return message;
+}
+
+bool SendSelectedTracksToApplication(HWND owner, int applicationIndex)
+{
+    if (applicationIndex < 0 ||
+        applicationIndex >= static_cast<int>(sendToApplications.size()))
+    {
+        return false;
+    }
+    const SendToApplication application =
+        sendToApplications[static_cast<std::size_t>(applicationIndex)];
+    const std::vector<std::wstring> paths = GetSelectedExistingTrackPaths();
+    if (paths.empty())
+    {
+        return false;
+    }
+    if (!IsUsableTrackFile(application.executablePath))
+    {
+        ShowSendToFailure(owner, application,
+                          L"The configured executable does not exist.");
+        return false;
+    }
+    if (!IsValidSendToArguments(application.arguments))
+    {
+        ShowSendToFailure(owner, application,
+                          L"Arguments must contain %files%.");
+        return false;
+    }
+
+    std::wstring expandedArguments;
+    if (!ExpandSendToArguments(application.arguments, paths,
+                               expandedArguments))
+    {
+        ShowSendToFailure(owner, application,
+                          L"Arguments must contain %files%.");
+        return false;
+    }
+
+    std::wstring commandLine = QuoteWindowsCommandLineArgument(
+        application.executablePath);
+    if (!expandedArguments.empty())
+    {
+        commandLine += L' ';
+        commandLine += expandedArguments;
+    }
+    if (commandLine.size() + 1 > MaximumWindowsCommandLineLength)
+    {
+        ShowSendToFailure(owner, application,
+                          L"Too many tracks to send in one command.");
+        return false;
+    }
+
+    std::vector<wchar_t> mutableCommandLine(commandLine.begin(),
+                                             commandLine.end());
+    mutableCommandLine.push_back(L'\0');
+    STARTUPINFOW startupInfo{};
+    startupInfo.cb = sizeof(startupInfo);
+    PROCESS_INFORMATION processInfo{};
+    if (!CreateProcessW(application.executablePath.c_str(),
+                        mutableCommandLine.data(), nullptr, nullptr, FALSE,
+                        0, nullptr, nullptr, &startupInfo, &processInfo))
+    {
+        const DWORD errorCode = GetLastError();
+        std::wstring detail = GetWindowsErrorMessage(errorCode);
+        if (detail.empty())
+        {
+            detail = L"Windows error " + std::to_wstring(errorCode) + L".";
+        }
+        ShowSendToFailure(owner, application, detail);
+        return false;
+    }
+    CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hProcess);
+    return true;
 }
 
 bool OpenFileInExplorer(const std::wstring& path)
@@ -1740,8 +1953,17 @@ void ShowTrackContextMenu(HWND window, LPARAM lParam)
     SetFocus(trackListView);
 
     HMENU menu = CreatePopupMenu();
-    if (menu == nullptr)
+    HMENU sendToMenu = CreatePopupMenu();
+    if (menu == nullptr || sendToMenu == nullptr)
     {
+        if (sendToMenu != nullptr)
+        {
+            DestroyMenu(sendToMenu);
+        }
+        if (menu != nullptr)
+        {
+            DestroyMenu(menu);
+        }
         return;
     }
 
@@ -1756,6 +1978,17 @@ void ShowTrackContextMenu(HWND window, LPARAM lParam)
                 CommandOpenTracksInExplorer, L"Open in Explorer");
     AppendMenuW(menu, MF_STRING | shellOperationState,
                 CommandShowTrackProperties, L"Properties");
+    for (std::size_t index = 0; index < sendToApplications.size(); ++index)
+    {
+        AppendMenuW(sendToMenu, MF_STRING,
+                    SendToApplicationCommandBase +
+                        static_cast<UINT>(index),
+                    sendToApplications[index].name.c_str());
+    }
+    const UINT sendToState = selectedCount > 0 &&
+        !sendToApplications.empty() ? MF_ENABLED : MF_GRAYED;
+    AppendMenuW(menu, MF_POPUP | sendToState,
+                reinterpret_cast<UINT_PTR>(sendToMenu), L"Send to");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | selectionState,
                 CommandDeleteTracks, L"Delete Track");
@@ -3685,6 +3918,15 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         return 0;
 
     case WM_COMMAND:
+        if (LOWORD(wParam) >= SendToApplicationCommandBase &&
+            LOWORD(wParam) < SendToApplicationCommandBase +
+                MaximumSendToApplications)
+        {
+            SendSelectedTracksToApplication(
+                window, static_cast<int>(LOWORD(wParam) -
+                                         SendToApplicationCommandBase));
+            return 0;
+        }
         switch (LOWORD(wParam))
         {
         case CommandOpenAudioFiles:
@@ -3730,7 +3972,10 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         break;
 
     case WM_INITMENUPOPUP:
-        UpdateMainMenuState();
+        if (reinterpret_cast<HMENU>(wParam) != trackSendToMenu)
+        {
+            UpdateMainMenuState();
+        }
         return 0;
 
     case WM_NOTIFY:
@@ -4089,6 +4334,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         fileMenu = nullptr;
         playlistMenu = nullptr;
         trackMenu = nullptr;
+        trackSendToMenu = nullptr;
         settingsMenu = nullptr;
         PostQuitMessage(0);
         return 0;
