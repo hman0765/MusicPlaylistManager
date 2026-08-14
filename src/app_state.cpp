@@ -325,6 +325,13 @@ std::wstring SerializeState(const AppState& state)
     }
     output += L"]\n";
     output += L"  },\n";
+    output += L"  \"extinfFormat\": {\n";
+    output += L"    \"preset\": ";
+    AppendJsonString(output,
+                     GetExtinfFormatPresetName(state.extinfFormatPreset));
+    output += L",\n    \"custom\": ";
+    AppendJsonString(output, state.customExtinfFormat);
+    output += L"\n  },\n";
     output += L"  \"groups\": [";
     if (!state.playlistGroups.empty())
     {
@@ -934,6 +941,29 @@ void ReadGui(JsonReader& reader, AppState& state)
     NormalizeTrackColumns(state.trackColumns);
 }
 
+void ReadExtinfFormat(JsonReader& reader, AppState& state)
+{
+    ExtinfFormatPreset preset = ExtinfFormatPreset::ArtistTitle;
+    std::wstring custom = DefaultCustomExtinfFormat;
+    reader.ReadObject([&](const std::wstring& name) {
+        if (name == L"preset")
+        {
+            ExtinfFormatPreset parsed{};
+            if (TryParseExtinfFormatPreset(reader.ReadString(), parsed))
+                preset = parsed;
+        }
+        else if (name == L"custom")
+        {
+            custom = reader.ReadString();
+        }
+        else reader.SkipValue();
+    });
+    if (!ValidateExtinfFormat(custom))
+        custom = DefaultCustomExtinfFormat;
+    state.extinfFormatPreset = preset;
+    state.customExtinfFormat = std::move(custom);
+}
+
 AppState DeserializeState(const std::wstring& text)
 {
     JsonReader reader(text);
@@ -944,6 +974,7 @@ AppState DeserializeState(const std::wstring& text)
         if (name == L"version") { state.version = ReadInt(reader); fields |= 1U << 0; }
         else if (name == L"selectedPlaylistIndex") { state.selectedPlaylistIndex = ReadInt(reader); fields |= 1U << 1; }
         else if (name == L"gui") { ReadGui(reader, state); fields |= 1U << 2; }
+        else if (name == L"extinfFormat") { ReadExtinfFormat(reader, state); }
         else if (name == L"groups")
         {
             reader.ReadArray([&]() {

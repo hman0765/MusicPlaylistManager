@@ -465,56 +465,276 @@ Playlist LoadM3U8(const std::wstring& filePath)
     return playlist;
 }
 
-bool HasUsefulMetadataForExtinf(const Track& track)
+namespace
 {
-    return !track.title.empty() || !track.artist.empty() ||
-           !track.album.empty() || !track.comment.empty();
+enum class ExtinfField
+{
+    Title,
+    Artist,
+    Album,
+    Comment,
+    TrackNumber,
+    Year,
+    Genre,
+    AlbumArtist,
+    DiscNumber,
+    Format,
+    Bitrate,
+    SampleRate,
+    FileSize,
+    DateModified,
+    Count
+};
+
+struct ParsedExtinfFormat
+{
+    std::vector<ExtinfField> fields;
+    std::size_t titleIndex = 0;
+};
+
+bool TryParseExtinfField(const std::wstring& name, ExtinfField& field)
+{
+    static constexpr const wchar_t* Names[] = {
+        L"title", L"artist", L"album", L"comment", L"tracknumber",
+        L"year", L"genre", L"albumartist", L"discnumber", L"format",
+        L"bitrate", L"samplerate", L"filesize", L"datemodified"
+    };
+    for (std::size_t index = 0; index < std::size(Names); ++index)
+    {
+        if (name == Names[index])
+        {
+            field = static_cast<ExtinfField>(index);
+            return true;
+        }
+    }
+    return false;
 }
 
-std::wstring BuildMetadataExtinfText(const Track& track)
+bool ParseExtinfFormat(const std::wstring& format,
+                       ParsedExtinfFormat& parsed,
+                       std::wstring* errorMessage)
 {
+    const auto fail = [errorMessage](const wchar_t* message) {
+        if (errorMessage != nullptr)
+            *errorMessage = message;
+        return false;
+    };
+    if (format.empty())
+        return fail(L"The format cannot be empty.");
+
+    parsed = {};
+    std::array<bool, static_cast<std::size_t>(ExtinfField::Count)> seen{};
+    constexpr wchar_t Separator[] = L" - ";
+    std::size_t start = 0;
+    while (start <= format.size())
+    {
+        const std::size_t end = format.find(Separator, start);
+        const std::wstring token = format.substr(
+            start, end == std::wstring::npos ? std::wstring::npos
+                                             : end - start);
+        if (token.size() < 3 || token.front() != L'{' ||
+            token.back() != L'}')
+        {
+            return fail(L"Use {field} items separated by ' - '.");
+        }
+        ExtinfField field{};
+        if (!TryParseExtinfField(token.substr(1, token.size() - 2), field))
+            return fail(L"The format contains an unknown field.");
+        const std::size_t fieldIndex = static_cast<std::size_t>(field);
+        if (seen[fieldIndex])
+            return fail(L"Each field may appear only once.");
+        seen[fieldIndex] = true;
+        if (field == ExtinfField::Title)
+            parsed.titleIndex = parsed.fields.size();
+        parsed.fields.push_back(field);
+        if (end == std::wstring::npos)
+            break;
+        start = end + std::size(Separator) - 1;
+    }
+    if (!seen[static_cast<std::size_t>(ExtinfField::Title)])
+        return fail(L"The format must contain {title} exactly once.");
+    if (errorMessage != nullptr)
+        errorMessage->clear();
+    return true;
+}
+
+std::wstring FormatExtinfFileSize(std::uint64_t bytes)
+{
+    static constexpr const wchar_t* Units[] = {
+        L"B", L"KB", L"MB", L"GB", L"TB"
+    };
+    double value = static_cast<double>(bytes);
+    std::size_t unit = 0;
+    while (value >= 1024.0 && unit + 1 < std::size(Units))
+    {
+        value /= 1024.0;
+        ++unit;
+    }
+    std::wostringstream text;
+    if (unit == 0)
+        text << bytes;
+    else
+        text << std::fixed << std::setprecision(1) << value;
+    text << L' ' << Units[unit];
+    return text.str();
+}
+
+std::wstring GetExtinfFieldValue(const Track& track, ExtinfField field,
+                                 bool allowTitleFallback)
+{
+    switch (field)
+    {
+    case ExtinfField::Title:
+        if (!track.title.empty() || !allowTitleFallback)
+            return track.title;
+        return track.path.empty()
+            ? L"" : std::filesystem::path(track.path).stem().wstring();
+    case ExtinfField::Artist: return track.artist;
+    case ExtinfField::Album: return track.album;
+    case ExtinfField::Comment: return track.comment;
+    case ExtinfField::TrackNumber: return track.trackNumber;
+    case ExtinfField::Year: return track.year;
+    case ExtinfField::Genre: return track.genre;
+    case ExtinfField::AlbumArtist: return track.albumArtist;
+    case ExtinfField::DiscNumber: return track.discNumber;
+    case ExtinfField::Format: return track.format;
+    case ExtinfField::Bitrate:
+        return track.bitrate < 0 ? L"" :
+            std::to_wstring(track.bitrate) + L" kbps";
+    case ExtinfField::SampleRate:
+        return track.sampleRate < 0 ? L"" :
+            std::to_wstring(track.sampleRate) + L" Hz";
+    case ExtinfField::FileSize:
+        return track.hasFileSize ? FormatExtinfFileSize(track.fileSize) : L"";
+    case ExtinfField::DateModified: return track.dateModified;
+    case ExtinfField::Count: break;
+    }
+    return L"";
+}
+
+std::wstring EvaluateExtinfFormat(const Track& track,
+                                  const ParsedExtinfFormat& parsed)
+{
+    std::vector<std::wstring> output;
+    for (std::size_t index = parsed.titleIndex; index > 0; --index)
+    {
+        std::wstring value = GetExtinfFieldValue(
+            track, parsed.fields[index - 1], false);
+        if (!value.empty())
+        {
+            output.push_back(std::move(value));
+            break;
+        }
+    }
+    std::wstring title = GetExtinfFieldValue(
+        track, ExtinfField::Title, true);
+    if (!title.empty())
+        output.push_back(std::move(title));
+    for (std::size_t index = parsed.titleIndex + 1;
+         index < parsed.fields.size(); ++index)
+    {
+        std::wstring value = GetExtinfFieldValue(
+            track, parsed.fields[index], false);
+        if (!value.empty())
+        {
+            output.push_back(std::move(value));
+            break;
+        }
+    }
     std::wstring result;
-    if (!track.artist.empty())
+    for (const std::wstring& value : output)
     {
-        result += track.artist;
-        result += L" - ";
-    }
-
-    if (!track.title.empty())
-    {
-        result += track.title;
-    }
-    else if (!track.path.empty())
-    {
-        result += std::filesystem::path(track.path).stem().wstring();
-    }
-
-    if (!track.comment.empty())
-    {
-        result += L" - ";
-        result += track.comment;
-    }
-    else if (!track.album.empty())
-    {
-        result += L" - ";
-        result += track.album;
+        if (!result.empty())
+            result += L" - ";
+        result += value;
     }
     return result;
 }
 
+std::wstring BuildExtinfText(const Track& track,
+                             const ParsedExtinfFormat& parsed)
+{
+    const bool hasFormatValue = std::any_of(
+        parsed.fields.begin(), parsed.fields.end(),
+        [&track](ExtinfField field) {
+            return !GetExtinfFieldValue(track, field, false).empty();
+        });
+    if (hasFormatValue)
+        return EvaluateExtinfFormat(track, parsed);
+    if (!track.extinfText.empty())
+        return track.extinfText;
+    return track.path.empty()
+        ? L"" : std::filesystem::path(track.path).stem().wstring();
+}
+}
+
+const wchar_t* GetExtinfFormatPresetName(ExtinfFormatPreset preset)
+{
+    switch (preset)
+    {
+    case ExtinfFormatPreset::ArtistTitle: return L"artistTitle";
+    case ExtinfFormatPreset::Title: return L"title";
+    case ExtinfFormatPreset::ArtistTitleAlbum: return L"artistTitleAlbum";
+    case ExtinfFormatPreset::Custom: return L"custom";
+    }
+    return L"artistTitle";
+}
+
+bool TryParseExtinfFormatPreset(const std::wstring& name,
+                                ExtinfFormatPreset& preset)
+{
+    for (const ExtinfFormatPreset candidate : {
+         ExtinfFormatPreset::ArtistTitle, ExtinfFormatPreset::Title,
+         ExtinfFormatPreset::ArtistTitleAlbum, ExtinfFormatPreset::Custom})
+    {
+        if (name == GetExtinfFormatPresetName(candidate))
+        {
+            preset = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
+std::wstring GetExtinfFormatString(ExtinfFormatPreset preset,
+                                   const std::wstring& customFormat)
+{
+    switch (preset)
+    {
+    case ExtinfFormatPreset::ArtistTitle:
+        return L"{artist} - {title}";
+    case ExtinfFormatPreset::Title:
+        return L"{title}";
+    case ExtinfFormatPreset::ArtistTitleAlbum:
+        return L"{artist} - {title} - {album}";
+    case ExtinfFormatPreset::Custom:
+        return customFormat;
+    }
+    return L"{artist} - {title}";
+}
+
+bool ValidateExtinfFormat(const std::wstring& format,
+                          std::wstring* errorMessage)
+{
+    ParsedExtinfFormat parsed{};
+    return ParseExtinfFormat(format, parsed, errorMessage);
+}
+
+std::wstring BuildExtinfText(const Track& track,
+                             ExtinfFormatPreset preset,
+                             const std::wstring& customFormat)
+{
+    ParsedExtinfFormat parsed{};
+    std::wstring format = GetExtinfFormatString(preset, customFormat);
+    if (!ParseExtinfFormat(format, parsed, nullptr))
+        ParseExtinfFormat(DefaultCustomExtinfFormat, parsed, nullptr);
+    return BuildExtinfText(track, parsed);
+}
+
 std::wstring BuildExtinfText(const Track& track)
 {
-    if (HasUsefulMetadataForExtinf(track))
-    {
-        return BuildMetadataExtinfText(track);
-    }
-    if (!track.extinfText.empty())
-    {
-        return track.extinfText;
-    }
-    return track.path.empty()
-        ? L""
-        : std::filesystem::path(track.path).stem().wstring();
+    return BuildExtinfText(track, ExtinfFormatPreset::ArtistTitle,
+                           DefaultCustomExtinfFormat);
 }
 
 int GetExportDuration(const Track& track)
@@ -532,6 +752,18 @@ int GetExportDuration(const Track& track)
 
 void SaveM3U8(const Playlist& playlist, const std::wstring& filePath)
 {
+    SaveM3U8(playlist, filePath, ExtinfFormatPreset::ArtistTitle,
+             DefaultCustomExtinfFormat);
+}
+
+void SaveM3U8(const Playlist& playlist, const std::wstring& filePath,
+              ExtinfFormatPreset preset,
+              const std::wstring& customFormat)
+{
+    ParsedExtinfFormat parsed{};
+    if (!ParseExtinfFormat(GetExtinfFormatString(preset, customFormat),
+                           parsed, nullptr))
+        ParseExtinfFormat(DefaultCustomExtinfFormat, parsed, nullptr);
     std::wstring contents = L"#EXTM3U\r\n";
     for (const Track& track : playlist.tracks)
     {
@@ -543,7 +775,7 @@ void SaveM3U8(const Playlist& playlist, const std::wstring& filePath)
         contents += L"#EXTINF:";
         contents += std::to_wstring(GetExportDuration(track));
         contents += L",";
-        contents += BuildExtinfText(track);
+        contents += BuildExtinfText(track, parsed);
         contents += L"\r\n";
         contents += track.path;
         contents += L"\r\n";

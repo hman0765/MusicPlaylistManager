@@ -103,6 +103,17 @@ struct MetadataRequest
     bool dateModified = false;
 };
 
+enum class ExtinfFormatPreset
+{
+    ArtistTitle,
+    Title,
+    ArtistTitleAlbum,
+    Custom
+};
+
+inline constexpr wchar_t DefaultCustomExtinfFormat[] =
+    L"{artist} - {title} - {comment} - {album}";
+
 struct Playlist
 {
     std::wstring name;
@@ -119,7 +130,20 @@ bool UpdateTrackMetadata(Track& track);
 bool UpdateTrackMetadata(Track& track, const MetadataRequest& request);
 Playlist LoadM3U8(const std::wstring& filePath);
 void SaveM3U8(const Playlist& playlist, const std::wstring& filePath);
+void SaveM3U8(const Playlist& playlist, const std::wstring& filePath,
+              ExtinfFormatPreset preset,
+              const std::wstring& customFormat);
 std::wstring BuildExtinfText(const Track& track);
+std::wstring BuildExtinfText(const Track& track,
+                             ExtinfFormatPreset preset,
+                             const std::wstring& customFormat);
+std::wstring GetExtinfFormatString(ExtinfFormatPreset preset,
+                                   const std::wstring& customFormat);
+bool ValidateExtinfFormat(const std::wstring& format,
+                          std::wstring* errorMessage = nullptr);
+const wchar_t* GetExtinfFormatPresetName(ExtinfFormatPreset preset);
+bool TryParseExtinfFormatPreset(const std::wstring& name,
+                                ExtinfFormatPreset& preset);
 int GetExportDuration(const Track& track);
 std::wstring FormatDuration(int seconds);
 void AddTrack(Playlist& playlist, Track track);

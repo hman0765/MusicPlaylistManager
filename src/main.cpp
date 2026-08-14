@@ -34,6 +34,10 @@ constexpr wchar_t SendToEditorWindowClassName[] =
     L"MusicPlaylistManagerSendToEditorWindow";
 constexpr wchar_t TrackColumnsWindowClassName[] =
     L"MusicPlaylistManagerTrackColumnsWindow";
+constexpr wchar_t ExtinfFormatWindowClassName[] =
+    L"MusicPlaylistManagerExtinfFormatWindow";
+constexpr wchar_t CustomExtinfEditorWindowClassName[] =
+    L"MusicPlaylistManagerCustomExtinfEditorWindow";
 constexpr wchar_t WindowTitle[] = L"Music Playlist Manager";
 constexpr int SplitterWidth = 6;
 constexpr int MinimumPaneWidth = 120;
@@ -53,6 +57,7 @@ constexpr UINT CommandExit = 1011;
 constexpr UINT CommandOrganizePlaylists = 1012;
 constexpr UINT CommandSendToApplications = 1013;
 constexpr UINT CommandTrackColumns = 1014;
+constexpr UINT CommandExtinfFormat = 1015;
 constexpr UINT SendToApplicationCommandBase = 12000;
 constexpr UINT MaximumWindowsCommandLineLength = 32767;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
@@ -91,6 +96,17 @@ constexpr int TrackColumnsListId = 4001;
 constexpr int TrackColumnsUpButtonId = 4002;
 constexpr int TrackColumnsDownButtonId = 4003;
 constexpr int TrackColumnsCloseButtonId = 4004;
+constexpr int ExtinfArtistTitleRadioId = 5001;
+constexpr int ExtinfTitleRadioId = 5002;
+constexpr int ExtinfArtistTitleAlbumRadioId = 5003;
+constexpr int ExtinfCustomRadioId = 5004;
+constexpr int ExtinfCustomTextId = 5005;
+constexpr int ExtinfEditButtonId = 5006;
+constexpr int ExtinfPreviewTextId = 5007;
+constexpr int ExtinfCloseButtonId = 5008;
+constexpr int CustomExtinfEditId = 5101;
+constexpr int CustomExtinfOkId = 5102;
+constexpr int CustomExtinfCancelId = 5103;
 
 HWND mainWindow = nullptr;
 HWND playlistListView = nullptr;
@@ -130,6 +146,12 @@ HWND trackColumnsUpButton = nullptr;
 HWND trackColumnsDownButton = nullptr;
 HWND trackColumnsCloseButton = nullptr;
 bool isRefreshingTrackColumns = false;
+HWND extinfFormatWindow = nullptr;
+HWND extinfCustomText = nullptr;
+HWND extinfEditButton = nullptr;
+HWND extinfPreviewText = nullptr;
+HWND customExtinfEditorWindow = nullptr;
+HWND customExtinfEdit = nullptr;
 HFONT statusFont = nullptr;
 int statusHeight = 32;
 int splitterX = 240;
@@ -141,6 +163,8 @@ int savedWindowHeight = 600;
 std::vector<TrackColumnConfig> trackColumnConfigs =
     MakeDefaultTrackColumnConfigs();
 std::vector<TrackColumnId> visibleTrackColumnIds;
+ExtinfFormatPreset extinfFormatPreset = ExtinfFormatPreset::ArtistTitle;
+std::wstring customExtinfFormat = DefaultCustomExtinfFormat;
 bool isDraggingSplitter = false;
 int splitterDragOffset = 0;
 int splitterXAtDragStart = 240;
@@ -197,6 +221,7 @@ bool CanUseSendToApplication(const SendToApplication& application,
 void ShowPlaylistOrganizer(HWND owner);
 void ShowSendToApplications(HWND owner);
 void ShowTrackColumns(HWND owner);
+void ShowExtinfFormatSettings(HWND owner);
 void SaveCurrentTrackColumnWidths();
 void RebuildTrackListColumns();
 LRESULT CALLBACK PlaylistOrganizerWindowProcedure(
@@ -206,6 +231,10 @@ LRESULT CALLBACK SendToSettingsWindowProcedure(
 LRESULT CALLBACK SendToEditorWindowProcedure(
     HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK TrackColumnsWindowProcedure(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK ExtinfFormatWindowProcedure(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK CustomExtinfEditorWindowProcedure(
     HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
 void MarkAppStateDirty()
@@ -244,6 +273,8 @@ AppState CaptureCurrentAppState()
         state.windowHeight = savedWindowHeight;
     }
     state.trackColumns = trackColumnConfigs;
+    state.extinfFormatPreset = extinfFormatPreset;
+    state.customExtinfFormat = customExtinfFormat;
     return state;
 }
 
@@ -275,6 +306,8 @@ void ApplyLoadedAppState(AppState state)
     savedWindowWidth = state.windowWidth;
     savedWindowHeight = state.windowHeight;
     trackColumnConfigs = std::move(state.trackColumns);
+    extinfFormatPreset = state.extinfFormatPreset;
+    customExtinfFormat = std::move(state.customExtinfFormat);
 }
 
 void ResetToDefaultAppState()
@@ -291,6 +324,8 @@ void ResetToDefaultAppState()
     savedWindowWidth = 900;
     savedWindowHeight = 600;
     trackColumnConfigs = MakeDefaultTrackColumnConfigs();
+    extinfFormatPreset = ExtinfFormatPreset::ArtistTitle;
+    customExtinfFormat = DefaultCustomExtinfFormat;
     appStateDirty = false;
 }
 
@@ -1183,6 +1218,8 @@ bool CreateMainMenuBar(HWND window)
                 L"Send To Applications...");
     AppendMenuW(settingsMenu, MF_STRING, CommandTrackColumns,
                 L"Columns...");
+    AppendMenuW(settingsMenu, MF_STRING, CommandExtinfFormat,
+                L"EXTINF Format...");
 
     AppendMenuW(menuBar, MF_POPUP,
                 reinterpret_cast<UINT_PTR>(fileMenu), L"&File");
@@ -2038,7 +2075,8 @@ void ExportSelectedPlaylist(HWND window)
 
     try
     {
-        SaveM3U8(*playlist, filePathBuffer.data());
+        SaveM3U8(*playlist, filePathBuffer.data(), extinfFormatPreset,
+                 customExtinfFormat);
         playlist->filePath = filePathBuffer.data();
         playlist->isModified = false;
         MarkAppStateDirty();
@@ -4146,6 +4184,307 @@ void ShowSendToApplications(HWND owner)
     }
 }
 
+void UpdateExtinfFormatControls()
+{
+    if (extinfFormatWindow == nullptr)
+        return;
+    const int checkedId = ExtinfArtistTitleRadioId +
+        static_cast<int>(extinfFormatPreset);
+    CheckRadioButton(extinfFormatWindow, ExtinfArtistTitleRadioId,
+                     ExtinfCustomRadioId, checkedId);
+    SetWindowTextW(extinfCustomText, customExtinfFormat.c_str());
+    EnableWindow(extinfEditButton,
+                 extinfFormatPreset == ExtinfFormatPreset::Custom);
+
+    Track sample{};
+    sample.artist = L"Yes";
+    sample.title = L"Roundabout";
+    sample.album = L"Fragile";
+    sample.comment = L"Favorite";
+    sample.trackNumber = L"1";
+    sample.year = L"1971";
+    sample.genre = L"Progressive Rock";
+    sample.albumArtist = L"Yes";
+    sample.discNumber = L"1";
+    sample.format = L"FLAC";
+    sample.bitrate = 1000;
+    sample.sampleRate = 44100;
+    sample.fileSize = 8ULL * 1024ULL * 1024ULL;
+    sample.hasFileSize = true;
+    sample.dateModified = L"2026-08-15 02:30";
+    const std::wstring preview = BuildExtinfText(
+        sample, extinfFormatPreset, customExtinfFormat);
+    SetWindowTextW(extinfPreviewText, preview.c_str());
+}
+
+void ShowCustomExtinfEditor(HWND owner)
+{
+    if (customExtinfEditorWindow != nullptr)
+    {
+        SetForegroundWindow(customExtinfEditorWindow);
+        return;
+    }
+    RECT ownerRect{};
+    GetWindowRect(owner, &ownerRect);
+    constexpr int width = 620;
+    constexpr int height = 205;
+    customExtinfEditorWindow = CreateWindowExW(
+        WS_EX_DLGMODALFRAME, CustomExtinfEditorWindowClassName,
+        L"Custom EXTINF Format", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2,
+        ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2,
+        width, height, owner, nullptr,
+        reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(owner, GWLP_HINSTANCE)),
+        nullptr);
+    if (customExtinfEditorWindow == nullptr)
+        return;
+    EnableWindow(owner, FALSE);
+    ShowWindow(customExtinfEditorWindow, SW_SHOW);
+    UpdateWindow(customExtinfEditorWindow);
+    MSG message{};
+    while (IsWindow(customExtinfEditorWindow) &&
+           GetMessageW(&message, nullptr, 0, 0) > 0)
+    {
+        if (!IsDialogMessageW(customExtinfEditorWindow, &message))
+        {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+}
+
+LRESULT CALLBACK CustomExtinfEditorWindowProcedure(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_CREATE:
+    {
+        const HINSTANCE instance =
+            reinterpret_cast<LPCREATESTRUCTW>(lParam)->hInstance;
+        CreateWindowExW(0, WC_STATICW, L"Format:",
+                        WS_CHILD | WS_VISIBLE, 14, 16, 70, 22,
+                        window, nullptr, instance, nullptr);
+        customExtinfEdit = CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_EDITW, customExtinfFormat.c_str(),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+            84, 13, 505, 25, window,
+            reinterpret_cast<HMENU>(CustomExtinfEditId), instance, nullptr);
+        CreateWindowExW(0, WC_STATICW,
+                        L"Fields: {title}, {artist}, {album}, {comment}, "
+                        L"{tracknumber}, {year}, {genre}",
+                        WS_CHILD | WS_VISIBLE, 14, 51, 575, 22,
+                        window, nullptr, instance, nullptr);
+        CreateWindowExW(0, WC_STATICW,
+                        L"{albumartist}, {discnumber}, {format}, {bitrate}, "
+                        L"{samplerate}, {filesize}, {datemodified}",
+                        WS_CHILD | WS_VISIBLE, 55, 74, 534, 22,
+                        window, nullptr, instance, nullptr);
+        CreateWindowExW(0, WC_BUTTONW, L"OK",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                        427, 118, 76, 28, window,
+                        reinterpret_cast<HMENU>(CustomExtinfOkId), instance,
+                        nullptr);
+        CreateWindowExW(0, WC_BUTTONW, L"Cancel",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                        513, 118, 76, 28, window,
+                        reinterpret_cast<HMENU>(CustomExtinfCancelId), instance,
+                        nullptr);
+        if (customExtinfEdit == nullptr)
+            return -1;
+        SendMessageW(customExtinfEdit, EM_SETLIMITTEXT, 2048, 0);
+        SetFocus(customExtinfEdit);
+        SendMessageW(customExtinfEdit, EM_SETSEL, 0, -1);
+        return 0;
+    }
+    case WM_COMMAND:
+        switch (LOWORD(wParam))
+        {
+        case CustomExtinfOkId:
+        {
+            const std::wstring candidate = GetControlText(customExtinfEdit);
+            std::wstring error;
+            if (!ValidateExtinfFormat(candidate, &error))
+            {
+                MessageBoxW(window, error.c_str(), L"Custom EXTINF Format",
+                            MB_OK | MB_ICONINFORMATION);
+                SetFocus(customExtinfEdit);
+                return 0;
+            }
+            if (customExtinfFormat != candidate)
+            {
+                customExtinfFormat = candidate;
+                MarkAppStateDirty();
+            }
+            UpdateExtinfFormatControls();
+            DestroyWindow(window);
+            return 0;
+        }
+        case CustomExtinfCancelId:
+            DestroyWindow(window);
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        DestroyWindow(window);
+        return 0;
+    case WM_DESTROY:
+        customExtinfEditorWindow = nullptr;
+        customExtinfEdit = nullptr;
+        if (extinfFormatWindow != nullptr)
+        {
+            EnableWindow(extinfFormatWindow, TRUE);
+            SetForegroundWindow(extinfFormatWindow);
+        }
+        return 0;
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+LRESULT CALLBACK ExtinfFormatWindowProcedure(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_CREATE:
+    {
+        const HINSTANCE instance =
+            reinterpret_cast<LPCREATESTRUCTW>(lParam)->hInstance;
+        CreateWindowExW(0, WC_STATICW, L"Preset:", WS_CHILD | WS_VISIBLE,
+                        16, 16, 90, 22, window, nullptr, instance, nullptr);
+        CreateWindowExW(0, WC_BUTTONW, L"Artist - Title",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON |
+                            WS_GROUP,
+                        30, 43, 220, 24, window,
+                        reinterpret_cast<HMENU>(ExtinfArtistTitleRadioId),
+                        instance, nullptr);
+        CreateWindowExW(0, WC_BUTTONW, L"Title",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
+                        30, 70, 220, 24, window,
+                        reinterpret_cast<HMENU>(ExtinfTitleRadioId), instance,
+                        nullptr);
+        CreateWindowExW(0, WC_BUTTONW, L"Artist - Title - Album",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
+                        30, 97, 220, 24, window,
+                        reinterpret_cast<HMENU>(ExtinfArtistTitleAlbumRadioId),
+                        instance, nullptr);
+        CreateWindowExW(0, WC_BUTTONW, L"Custom",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
+                        30, 124, 220, 24, window,
+                        reinterpret_cast<HMENU>(ExtinfCustomRadioId), instance,
+                        nullptr);
+        CreateWindowExW(0, WC_STATICW, L"Custom:", WS_CHILD | WS_VISIBLE,
+                        16, 164, 80, 22, window, nullptr, instance, nullptr);
+        extinfCustomText = CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_EDITW, L"",
+            WS_CHILD | WS_VISIBLE | ES_READONLY | ES_AUTOHSCROLL,
+            16, 188, 430, 25, window,
+            reinterpret_cast<HMENU>(ExtinfCustomTextId), instance, nullptr);
+        extinfEditButton = CreateWindowExW(
+            0, WC_BUTTONW, L"Edit...", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            456, 187, 80, 27, window,
+            reinterpret_cast<HMENU>(ExtinfEditButtonId), instance, nullptr);
+        CreateWindowExW(0, WC_STATICW, L"Preview:", WS_CHILD | WS_VISIBLE,
+                        16, 235, 80, 22, window, nullptr, instance, nullptr);
+        extinfPreviewText = CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_STATICW, L"",
+            WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
+            16, 259, 520, 32, window,
+            reinterpret_cast<HMENU>(ExtinfPreviewTextId), instance, nullptr);
+        CreateWindowExW(0, WC_BUTTONW, L"Close",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                        456, 310, 80, 28, window,
+                        reinterpret_cast<HMENU>(ExtinfCloseButtonId), instance,
+                        nullptr);
+        if (extinfCustomText == nullptr || extinfEditButton == nullptr ||
+            extinfPreviewText == nullptr)
+            return -1;
+        UpdateExtinfFormatControls();
+        return 0;
+    }
+    case WM_COMMAND:
+    {
+        const int command = LOWORD(wParam);
+        if (command >= ExtinfArtistTitleRadioId &&
+            command <= ExtinfCustomRadioId && HIWORD(wParam) == BN_CLICKED)
+        {
+            const ExtinfFormatPreset selected =
+                static_cast<ExtinfFormatPreset>(
+                    command - ExtinfArtistTitleRadioId);
+            if (extinfFormatPreset != selected)
+            {
+                extinfFormatPreset = selected;
+                MarkAppStateDirty();
+            }
+            UpdateExtinfFormatControls();
+            return 0;
+        }
+        if (command == ExtinfEditButtonId)
+        {
+            ShowCustomExtinfEditor(window);
+            return 0;
+        }
+        if (command == ExtinfCloseButtonId)
+        {
+            DestroyWindow(window);
+            return 0;
+        }
+        break;
+    }
+    case WM_CLOSE:
+        DestroyWindow(window);
+        return 0;
+    case WM_DESTROY:
+        extinfFormatWindow = nullptr;
+        extinfCustomText = nullptr;
+        extinfEditButton = nullptr;
+        extinfPreviewText = nullptr;
+        if (mainWindow != nullptr)
+        {
+            EnableWindow(mainWindow, TRUE);
+            SetForegroundWindow(mainWindow);
+        }
+        return 0;
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+void ShowExtinfFormatSettings(HWND owner)
+{
+    if (extinfFormatWindow != nullptr)
+    {
+        SetForegroundWindow(extinfFormatWindow);
+        return;
+    }
+    RECT ownerRect{};
+    GetWindowRect(owner, &ownerRect);
+    constexpr int width = 570;
+    constexpr int height = 390;
+    extinfFormatWindow = CreateWindowExW(
+        WS_EX_DLGMODALFRAME, ExtinfFormatWindowClassName, L"EXTINF Format",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2,
+        ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2,
+        width, height, owner, nullptr,
+        reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(owner, GWLP_HINSTANCE)),
+        nullptr);
+    if (extinfFormatWindow == nullptr)
+        return;
+    EnableWindow(owner, FALSE);
+    ShowWindow(extinfFormatWindow, SW_SHOW);
+    UpdateWindow(extinfFormatWindow);
+    MSG message{};
+    while (IsWindow(extinfFormatWindow) &&
+           GetMessageW(&message, nullptr, 0, 0) > 0)
+    {
+        if (!IsDialogMessageW(extinfFormatWindow, &message))
+        {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+}
+
 void UpdateTrackColumnsButtons()
 {
     const int selected = trackColumnsList == nullptr ? -1 :
@@ -4471,6 +4810,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             return 0;
         case CommandTrackColumns:
             ShowTrackColumns(window);
+            return 0;
+        case CommandExtinfFormat:
+            ShowExtinfFormatSettings(window);
             return 0;
         case CommandNewPlaylist:
             CreateNewPlaylist();
@@ -4968,6 +5310,32 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     {
         MessageBoxW(nullptr,
                     L"The Track Columns window class could not be registered.",
+                    WindowTitle, MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
+    WNDCLASSEXW extinfFormatClass = windowClass;
+    extinfFormatClass.lpfnWndProc = ExtinfFormatWindowProcedure;
+    extinfFormatClass.lpszClassName = ExtinfFormatWindowClassName;
+    extinfFormatClass.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
+    if (!RegisterClassExW(&extinfFormatClass))
+    {
+        MessageBoxW(nullptr,
+                    L"The EXTINF Format window class could not be registered.",
+                    WindowTitle, MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
+    WNDCLASSEXW customExtinfEditorClass = windowClass;
+    customExtinfEditorClass.lpfnWndProc =
+        CustomExtinfEditorWindowProcedure;
+    customExtinfEditorClass.lpszClassName =
+        CustomExtinfEditorWindowClassName;
+    customExtinfEditorClass.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
+    if (!RegisterClassExW(&customExtinfEditorClass))
+    {
+        MessageBoxW(nullptr,
+                    L"The Custom EXTINF editor class could not be registered.",
                     WindowTitle, MB_OK | MB_ICONERROR);
         return 1;
     }

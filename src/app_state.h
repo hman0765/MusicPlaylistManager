@@ -62,6 +62,9 @@ struct AppState
     int windowHeight = 600;
     std::vector<TrackColumnConfig> trackColumns =
         MakeDefaultTrackColumnConfigs();
+    ExtinfFormatPreset extinfFormatPreset =
+        ExtinfFormatPreset::ArtistTitle;
+    std::wstring customExtinfFormat = DefaultCustomExtinfFormat;
 };
 
 enum class AppStateLoadResult
