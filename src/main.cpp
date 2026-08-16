@@ -22,6 +22,8 @@
 #include "app_state.h"
 #include "drag_drop.h"
 #include "playlist.h"
+#include "resource.h"
+#include "version.h"
 
 namespace
 {
@@ -58,6 +60,7 @@ constexpr UINT CommandOrganizePlaylists = 1012;
 constexpr UINT CommandSendToApplications = 1013;
 constexpr UINT CommandTrackColumns = 1014;
 constexpr UINT CommandExtinfFormat = 1015;
+constexpr UINT CommandAbout = 1016;
 constexpr UINT SendToApplicationCommandBase = 12000;
 constexpr UINT MaximumWindowsCommandLineLength = 32767;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
@@ -86,6 +89,8 @@ constexpr int SendToAddButtonId = 3002;
 constexpr int SendToEditButtonId = 3003;
 constexpr int SendToRemoveButtonId = 3004;
 constexpr int SendToCloseButtonId = 3005;
+constexpr int SendToMoveUpButtonId = 3006;
+constexpr int SendToMoveDownButtonId = 3007;
 constexpr int SendToEditorNameId = 3101;
 constexpr int SendToEditorExecutableId = 3102;
 constexpr int SendToEditorBrowseId = 3103;
@@ -119,6 +124,7 @@ HMENU playlistMenu = nullptr;
 HMENU trackMenu = nullptr;
 HMENU trackSendToMenu = nullptr;
 HMENU settingsMenu = nullptr;
+HMENU helpMenu = nullptr;
 HWND organizerWindow = nullptr;
 HWND organizerGroupList = nullptr;
 HWND organizerPlaylistList = nullptr;
@@ -135,6 +141,8 @@ HWND sendToAddButton = nullptr;
 HWND sendToEditButton = nullptr;
 HWND sendToRemoveButton = nullptr;
 HWND sendToCloseButton = nullptr;
+HWND sendToMoveUpButton = nullptr;
+HWND sendToMoveDownButton = nullptr;
 HWND sendToEditorWindow = nullptr;
 HWND sendToEditorName = nullptr;
 HWND sendToEditorExecutable = nullptr;
@@ -1057,7 +1065,8 @@ void RefreshStatusBar()
     SetWindowTextW(statusText, text.c_str());
 }
 
-std::vector<std::wstring> GetSelectedExistingTrackPaths()
+std::vector<std::wstring> GetExistingTrackPaths(
+    const std::vector<int>& trackIndices)
 {
     std::vector<std::wstring> paths;
     const Playlist* playlist = GetSelectedPlaylist();
@@ -1066,7 +1075,7 @@ std::vector<std::wstring> GetSelectedExistingTrackPaths()
         return paths;
     }
 
-    for (const int index : GetSelectedTrackIndices(trackListView))
+    for (const int index : trackIndices)
     {
         if (index < 0 || index >= static_cast<int>(playlist->tracks.size()))
         {
@@ -1087,6 +1096,11 @@ std::vector<std::wstring> GetSelectedExistingTrackPaths()
         }
     }
     return paths;
+}
+
+std::vector<std::wstring> GetSelectedExistingTrackPaths()
+{
+    return GetExistingTrackPaths(GetSelectedTrackIndices(trackListView));
 }
 
 bool CanOperateSelectedTracks(HWND listView)
@@ -1166,9 +1180,11 @@ bool CreateMainMenuBar(HWND window)
     trackMenu = CreatePopupMenu();
     trackSendToMenu = CreatePopupMenu();
     settingsMenu = CreatePopupMenu();
+    helpMenu = CreatePopupMenu();
     if (menuBar == nullptr || fileMenu == nullptr ||
         playlistMenu == nullptr || trackMenu == nullptr ||
-        trackSendToMenu == nullptr || settingsMenu == nullptr)
+        trackSendToMenu == nullptr || settingsMenu == nullptr ||
+        helpMenu == nullptr)
     {
         if (menuBar != nullptr) DestroyMenu(menuBar);
         if (fileMenu != nullptr) DestroyMenu(fileMenu);
@@ -1176,11 +1192,13 @@ bool CreateMainMenuBar(HWND window)
         if (trackMenu != nullptr) DestroyMenu(trackMenu);
         if (trackSendToMenu != nullptr) DestroyMenu(trackSendToMenu);
         if (settingsMenu != nullptr) DestroyMenu(settingsMenu);
+        if (helpMenu != nullptr) DestroyMenu(helpMenu);
         fileMenu = nullptr;
         playlistMenu = nullptr;
         trackMenu = nullptr;
         trackSendToMenu = nullptr;
         settingsMenu = nullptr;
+        helpMenu = nullptr;
         return false;
     }
 
@@ -1221,6 +1239,9 @@ bool CreateMainMenuBar(HWND window)
     AppendMenuW(settingsMenu, MF_STRING, CommandExtinfFormat,
                 L"EXTINF Format...");
 
+    AppendMenuW(helpMenu, MF_STRING, CommandAbout,
+                L"About Playlist Manager...");
+
     AppendMenuW(menuBar, MF_POPUP,
                 reinterpret_cast<UINT_PTR>(fileMenu), L"&File");
     AppendMenuW(menuBar, MF_POPUP,
@@ -1229,6 +1250,8 @@ bool CreateMainMenuBar(HWND window)
                 reinterpret_cast<UINT_PTR>(trackMenu), L"&Track");
     AppendMenuW(menuBar, MF_POPUP,
                 reinterpret_cast<UINT_PTR>(settingsMenu), L"&Settings");
+    AppendMenuW(menuBar, MF_POPUP,
+                reinterpret_cast<UINT_PTR>(helpMenu), L"&Help");
 
     if (!SetMenu(window, menuBar))
     {
@@ -1238,6 +1261,7 @@ bool CreateMainMenuBar(HWND window)
         trackMenu = nullptr;
         trackSendToMenu = nullptr;
         settingsMenu = nullptr;
+        helpMenu = nullptr;
         return false;
     }
     UpdateMainMenuState();
@@ -1345,36 +1369,6 @@ bool ExpandSendToArguments(const std::wstring& argumentsTemplate,
     return true;
 }
 
-std::wstring GetSelectedTrackParentFolder()
-{
-    const Playlist* playlist = GetSelectedPlaylist();
-    const std::vector<int> selectedIndices =
-        GetSelectedTrackIndices(trackListView);
-    if (playlist == nullptr || selectedIndices.size() != 1)
-    {
-        return L"";
-    }
-    const int trackIndex = selectedIndices.front();
-    if (trackIndex < 0 ||
-        trackIndex >= static_cast<int>(playlist->tracks.size()))
-    {
-        return L"";
-    }
-    const std::wstring& trackPath =
-        playlist->tracks[static_cast<std::size_t>(trackIndex)].path;
-    if (!IsUsableTrackFile(trackPath))
-    {
-        return L"";
-    }
-    const std::filesystem::path folder =
-        std::filesystem::path(trackPath).parent_path();
-    std::error_code error;
-    return !folder.empty() && std::filesystem::is_directory(folder, error) &&
-                   !error
-        ? folder.wstring()
-        : L"";
-}
-
 void ShowSendToFailure(HWND owner, const SendToApplication& application,
                        const std::wstring& detail = L"")
 {
@@ -1413,7 +1407,9 @@ std::wstring GetWindowsErrorMessage(DWORD errorCode)
     return message;
 }
 
-bool SendSelectedTracksToApplication(HWND owner, int applicationIndex)
+bool SendTrackPathsToApplication(HWND owner,
+                                 const std::vector<std::wstring>& paths,
+                                 int applicationIndex)
 {
     if (applicationIndex < 0 ||
         applicationIndex >= static_cast<int>(sendToApplications.size()))
@@ -1431,21 +1427,32 @@ bool SendSelectedTracksToApplication(HWND owner, int applicationIndex)
             L"Arguments must contain exactly one of %files% or %folder%.");
         return false;
     }
-    const int selectedTrackCount = trackListView == nullptr
-        ? 0 : ListView_GetSelectedCount(trackListView);
-    if (!CanUseSendToApplication(application, selectedTrackCount))
+    if (!CanUseSendToApplication(
+            application, static_cast<int>(paths.size())))
     {
         return false;
     }
-    const std::vector<std::wstring> paths = GetSelectedExistingTrackPaths();
     if (paths.empty())
     {
         return false;
     }
-    if (mode == SendToArgumentMode::Folder &&
-        GetSelectedTrackParentFolder().empty())
+    if (std::any_of(paths.begin(), paths.end(),
+                    [](const std::wstring& path) {
+                        return !IsUsableTrackFile(path);
+                    }))
     {
         return false;
+    }
+    if (mode == SendToArgumentMode::Folder)
+    {
+        const std::filesystem::path folder =
+            std::filesystem::path(paths.front()).parent_path();
+        std::error_code error;
+        if (folder.empty() || !std::filesystem::is_directory(folder, error) ||
+            error)
+        {
+            return false;
+        }
     }
     if (!IsUsableTrackFile(application.executablePath))
     {
@@ -1506,6 +1513,20 @@ bool SendSelectedTracksToApplication(HWND owner, int applicationIndex)
     CloseHandle(processInfo.hThread);
     CloseHandle(processInfo.hProcess);
     return true;
+}
+
+bool SendTracksToApplication(HWND owner,
+                             const std::vector<int>& trackIndices,
+                             int applicationIndex)
+{
+    return SendTrackPathsToApplication(
+        owner, GetExistingTrackPaths(trackIndices), applicationIndex);
+}
+
+bool SendSelectedTracksToApplication(HWND owner, int applicationIndex)
+{
+    return SendTracksToApplication(
+        owner, GetSelectedTrackIndices(trackListView), applicationIndex);
 }
 
 bool OpenFileInExplorer(const std::wstring& path)
@@ -3728,7 +3749,7 @@ bool ValidateSendToApplication(HWND owner,
     if (ignoreIndex < 0 &&
         sendToApplications.size() >= MaximumSendToApplications)
     {
-        MessageBoxW(owner, L"Up to 10 applications can be registered.",
+        MessageBoxW(owner, L"Up to 15 applications can be registered.",
                     L"Send To Applications", MB_OK | MB_ICONINFORMATION);
         return false;
     }
@@ -3744,11 +3765,16 @@ int GetSelectedSendToApplicationIndex()
 
 void UpdateSendToSettingsButtons()
 {
-    const bool hasSelection = GetSelectedSendToApplicationIndex() >= 0;
+    const int selected = GetSelectedSendToApplicationIndex();
+    const bool hasSelection = selected >= 0;
     EnableWindow(sendToAddButton,
                  sendToApplications.size() < MaximumSendToApplications);
     EnableWindow(sendToEditButton, hasSelection);
     EnableWindow(sendToRemoveButton, hasSelection);
+    EnableWindow(sendToMoveUpButton, selected > 0);
+    EnableWindow(sendToMoveDownButton,
+                 selected >= 0 &&
+                 selected + 1 < static_cast<int>(sendToApplications.size()));
 }
 
 void RefreshSendToApplicationsList(int rowToSelect = -1)
@@ -4025,6 +4051,22 @@ void RemoveSelectedSendToApplication(HWND owner)
     RefreshSendToApplicationsList(selectedRow);
 }
 
+void MoveSelectedSendToApplication(int direction)
+{
+    const int selected = GetSelectedSendToApplicationIndex();
+    const int destination = selected + direction;
+    if ((direction != -1 && direction != 1) || selected < 0 ||
+        destination < 0 ||
+        destination >= static_cast<int>(sendToApplications.size()))
+    {
+        return;
+    }
+    std::swap(sendToApplications[static_cast<std::size_t>(selected)],
+              sendToApplications[static_cast<std::size_t>(destination)]);
+    MarkAppStateDirty();
+    RefreshSendToApplicationsList(destination);
+}
+
 void LayoutSendToSettings(HWND window)
 {
     RECT client{};
@@ -4033,6 +4075,7 @@ void LayoutSendToSettings(HWND window)
     constexpr int buttonWidth = 90;
     constexpr int buttonHeight = 30;
     constexpr int gap = 8;
+    constexpr int moveButtonWidth = 48;
     const int width = client.right - client.left;
     const int height = client.bottom - client.top;
     const int buttonY = height - margin - buttonHeight;
@@ -4044,6 +4087,13 @@ void LayoutSendToSettings(HWND window)
                buttonWidth, buttonHeight, TRUE);
     MoveWindow(sendToRemoveButton, margin + (buttonWidth + gap) * 2, buttonY,
                buttonWidth, buttonHeight, TRUE);
+    const int moveDownX = width - margin - buttonWidth - gap -
+        moveButtonWidth;
+    const int moveUpX = moveDownX - gap - moveButtonWidth;
+    MoveWindow(sendToMoveUpButton, moveUpX, buttonY,
+               moveButtonWidth, buttonHeight, TRUE);
+    MoveWindow(sendToMoveDownButton, moveDownX, buttonY,
+               moveButtonWidth, buttonHeight, TRUE);
     MoveWindow(sendToCloseButton, width - margin - buttonWidth, buttonY,
                buttonWidth, buttonHeight, TRUE);
     ListView_SetColumnWidth(sendToList, 0, std::max(100, width / 3));
@@ -4078,6 +4128,15 @@ LRESULT CALLBACK SendToSettingsWindowProcedure(
             0, WC_BUTTONW, L"Remove", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             0, 0, 0, 0, window,
             reinterpret_cast<HMENU>(SendToRemoveButtonId), instance, nullptr);
+        sendToMoveUpButton = CreateWindowExW(
+            0, WC_BUTTONW, L"\u2191", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(SendToMoveUpButtonId), instance, nullptr);
+        sendToMoveDownButton = CreateWindowExW(
+            0, WC_BUTTONW, L"\u2193", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            0, 0, 0, 0, window,
+            reinterpret_cast<HMENU>(SendToMoveDownButtonId), instance,
+            nullptr);
         sendToCloseButton = CreateWindowExW(
             0, WC_BUTTONW, L"Close",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
@@ -4085,6 +4144,8 @@ LRESULT CALLBACK SendToSettingsWindowProcedure(
             reinterpret_cast<HMENU>(SendToCloseButtonId), instance, nullptr);
         if (sendToList == nullptr || sendToAddButton == nullptr ||
             sendToEditButton == nullptr || sendToRemoveButton == nullptr ||
+            sendToMoveUpButton == nullptr ||
+            sendToMoveDownButton == nullptr ||
             sendToCloseButton == nullptr)
         {
             return -1;
@@ -4110,6 +4171,12 @@ LRESULT CALLBACK SendToSettingsWindowProcedure(
             return 0;
         case SendToRemoveButtonId:
             RemoveSelectedSendToApplication(window);
+            return 0;
+        case SendToMoveUpButtonId:
+            MoveSelectedSendToApplication(-1);
+            return 0;
+        case SendToMoveDownButtonId:
+            MoveSelectedSendToApplication(1);
             return 0;
         case SendToCloseButtonId:
             SendMessageW(window, WM_CLOSE, 0, 0);
@@ -4144,6 +4211,8 @@ LRESULT CALLBACK SendToSettingsWindowProcedure(
         sendToAddButton = nullptr;
         sendToEditButton = nullptr;
         sendToRemoveButton = nullptr;
+        sendToMoveUpButton = nullptr;
+        sendToMoveDownButton = nullptr;
         sendToCloseButton = nullptr;
         EnableWindow(mainWindow, TRUE);
         SetForegroundWindow(mainWindow);
@@ -4196,24 +4265,27 @@ void UpdateExtinfFormatControls()
     EnableWindow(extinfEditButton,
                  extinfFormatPreset == ExtinfFormatPreset::Custom);
 
-    Track sample{};
-    sample.artist = L"Yes";
-    sample.title = L"Roundabout";
-    sample.album = L"Fragile";
-    sample.comment = L"Favorite";
-    sample.trackNumber = L"1";
-    sample.year = L"1971";
-    sample.genre = L"Progressive Rock";
-    sample.albumArtist = L"Yes";
-    sample.discNumber = L"1";
-    sample.format = L"FLAC";
-    sample.bitrate = 1000;
-    sample.sampleRate = 44100;
-    sample.fileSize = 8ULL * 1024ULL * 1024ULL;
-    sample.hasFileSize = true;
-    sample.dateModified = L"2026-08-15 02:30";
-    const std::wstring preview = BuildExtinfText(
-        sample, extinfFormatPreset, customExtinfFormat);
+    const Track* previewTrack = nullptr;
+    if (const Playlist* playlist = GetSelectedPlaylist();
+        playlist != nullptr && !playlist->tracks.empty())
+    {
+        const std::vector<int> selectedIndices =
+            GetSelectedTrackIndices(trackListView);
+        if (!selectedIndices.empty() && selectedIndices.front() >= 0 &&
+            selectedIndices.front() < static_cast<int>(playlist->tracks.size()))
+        {
+            previewTrack = &playlist->tracks[
+                static_cast<std::size_t>(selectedIndices.front())];
+        }
+        else
+        {
+            previewTrack = &playlist->tracks.front();
+        }
+    }
+    const std::wstring preview = previewTrack == nullptr
+        ? L""
+        : BuildExtinfText(*previewTrack, extinfFormatPreset,
+                          customExtinfFormat);
     SetWindowTextW(extinfPreviewText, preview.c_str());
 }
 
@@ -4814,6 +4886,13 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         case CommandExtinfFormat:
             ShowExtinfFormatSettings(window);
             return 0;
+        case CommandAbout:
+            MessageBoxW(
+                window,
+                L"Playlist Manager\n\nVersion " APP_VERSION_WSTRING
+                L"\n\nA playlist management application for Windows.",
+                L"About Playlist Manager", MB_OK | MB_ICONINFORMATION);
+            return 0;
         case CommandNewPlaylist:
             CreateNewPlaylist();
             return 0;
@@ -4871,6 +4950,20 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             {
                 RefreshStatusBar();
             }
+            return 0;
+        }
+        if (header->hwndFrom == trackListView &&
+            header->code == NM_DBLCLK)
+        {
+            if (sendToApplications.empty())
+                return 0;
+            const NMITEMACTIVATE* activation =
+                reinterpret_cast<NMITEMACTIVATE*>(lParam);
+            LVHITTESTINFO hitTest{};
+            hitTest.pt = activation->ptAction;
+            const int row = ListView_SubItemHitTest(trackListView, &hitTest);
+            if (row >= 0)
+                SendTracksToApplication(window, {row}, 0);
             return 0;
         }
         if (header->code == LVN_BEGINDRAG)
@@ -5207,6 +5300,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         trackMenu = nullptr;
         trackSendToMenu = nullptr;
         settingsMenu = nullptr;
+        helpMenu = nullptr;
         PostQuitMessage(0);
         return 0;
     }
@@ -5251,8 +5345,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     windowClass.lpfnWndProc = WindowProcedure;
     windowClass.hInstance = instance;
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    windowClass.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    windowClass.hIconSm = LoadIconW(nullptr, IDI_APPLICATION);
+    windowClass.hIcon = static_cast<HICON>(LoadImageW(
+        instance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
+        GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_SHARED));
+    windowClass.hIconSm = static_cast<HICON>(LoadImageW(
+        instance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
+        LR_SHARED));
+    if (windowClass.hIcon == nullptr)
+        windowClass.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    if (windowClass.hIconSm == nullptr)
+        windowClass.hIconSm = LoadIconW(nullptr, IDI_APPLICATION);
     windowClass.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
     windowClass.lpszClassName = WindowClassName;
 

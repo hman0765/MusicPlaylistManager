@@ -5,7 +5,7 @@
 
 #include "playlist.h"
 
-inline constexpr std::size_t MaximumSendToApplications = 10;
+inline constexpr std::size_t MaximumSendToApplications = 15;
 
 enum class TrackColumnId
 {
