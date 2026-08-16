@@ -13,6 +13,7 @@ LDFLAGS := -municode -mwindows -static
 
 TARGET := build/playlist-manager.exe
 OBJECTS := build/main.o build/playlist.o build/app_state.o build/drag_drop.o \
+	build/ui_text.o \
 	build/resource.o
 
 .PHONY: all clean
@@ -23,6 +24,7 @@ $(TARGET): $(OBJECTS) $(TAGLIB_LIB)
 	$(CXX) $(LDFLAGS) $(OBJECTS) -o $@ $(LDLIBS)
 
 build/main.o: src/main.cpp src/app_state.h src/playlist.h src/drag_drop.h \
+	src/ui_text.h \
 	src/resource.h src/version.h | build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
@@ -33,10 +35,13 @@ build/playlist.o: src/playlist.cpp src/playlist.h \
 	$(TAGLIB_ROOT)/taglib/toolkit/tpropertymap.h | build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-build/app_state.o: src/app_state.cpp src/app_state.h src/playlist.h | build
+build/app_state.o: src/app_state.cpp src/app_state.h src/playlist.h src/ui_text.h | build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 build/drag_drop.o: src/drag_drop.cpp src/drag_drop.h | build
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+build/ui_text.o: src/ui_text.cpp src/ui_text.h | build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 build/resource.o: src/resource.rc src/resource.h src/version.h resources/app.ico | build
@@ -46,4 +51,4 @@ build:
 	mkdir -p build
 
 clean:
-	powershell -NoProfile -Command "$$files = @('build/main.o', 'build/playlist.o', 'build/app_state.o', 'build/drag_drop.o', 'build/resource.o', 'build/playlist-manager.exe'); foreach ($$file in $$files) { if (Test-Path -LiteralPath $$file) { Remove-Item -Force -LiteralPath $$file } }"
+	powershell -NoProfile -Command "$$files = @('build/main.o', 'build/playlist.o', 'build/app_state.o', 'build/drag_drop.o', 'build/ui_text.o', 'build/resource.o', 'build/playlist-manager.exe'); foreach ($$file in $$files) { if (Test-Path -LiteralPath $$file) { Remove-Item -Force -LiteralPath $$file } }"

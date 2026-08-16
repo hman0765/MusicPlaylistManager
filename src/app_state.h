@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "playlist.h"
+#include "ui_text.h"
 
 inline constexpr std::size_t MaximumSendToApplications = 15;
 
@@ -65,6 +66,7 @@ struct AppState
     ExtinfFormatPreset extinfFormatPreset =
         ExtinfFormatPreset::ArtistTitle;
     std::wstring customExtinfFormat = DefaultCustomExtinfFormat;
+    AppLanguage language = AppLanguage::English;
 };
 
 enum class AppStateLoadResult

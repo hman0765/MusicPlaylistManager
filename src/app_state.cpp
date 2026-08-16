@@ -297,6 +297,9 @@ std::wstring SerializeState(const AppState& state)
 {
     std::wstring output = L"{\n";
     output += L"  \"version\": " + std::to_wstring(state.version) + L",\n";
+    output += L"  \"language\": ";
+    AppendJsonString(output, GetAppLanguageCode(state.language));
+    output += L",\n";
     output += L"  \"selectedPlaylistIndex\": " +
               std::to_wstring(state.selectedPlaylistIndex) + L",\n";
     output += L"  \"gui\": {\n";
@@ -972,6 +975,12 @@ AppState DeserializeState(const std::wstring& text)
     unsigned int fields = 0;
     reader.ReadObject([&](const std::wstring& name) {
         if (name == L"version") { state.version = ReadInt(reader); fields |= 1U << 0; }
+        else if (name == L"language")
+        {
+            AppLanguage language{};
+            TryParseAppLanguage(reader.ReadString(), language);
+            state.language = language;
+        }
         else if (name == L"selectedPlaylistIndex") { state.selectedPlaylistIndex = ReadInt(reader); fields |= 1U << 1; }
         else if (name == L"gui") { ReadGui(reader, state); fields |= 1U << 2; }
         else if (name == L"extinfFormat") { ReadExtinfFormat(reader, state); }

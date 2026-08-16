@@ -61,6 +61,8 @@ constexpr UINT CommandSendToApplications = 1013;
 constexpr UINT CommandTrackColumns = 1014;
 constexpr UINT CommandExtinfFormat = 1015;
 constexpr UINT CommandAbout = 1016;
+constexpr UINT CommandLanguageEnglish = 1017;
+constexpr UINT CommandLanguageJapanese = 1018;
 constexpr UINT SendToApplicationCommandBase = 12000;
 constexpr UINT MaximumWindowsCommandLineLength = 32767;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
@@ -125,6 +127,7 @@ HMENU trackMenu = nullptr;
 HMENU trackSendToMenu = nullptr;
 HMENU settingsMenu = nullptr;
 HMENU helpMenu = nullptr;
+HMENU languageMenu = nullptr;
 HWND organizerWindow = nullptr;
 HWND organizerGroupList = nullptr;
 HWND organizerPlaylistList = nullptr;
@@ -173,6 +176,8 @@ std::vector<TrackColumnConfig> trackColumnConfigs =
 std::vector<TrackColumnId> visibleTrackColumnIds;
 ExtinfFormatPreset extinfFormatPreset = ExtinfFormatPreset::ArtistTitle;
 std::wstring customExtinfFormat = DefaultCustomExtinfFormat;
+AppLanguage activeLanguage = AppLanguage::English;
+AppLanguage languageSetting = AppLanguage::English;
 bool isDraggingSplitter = false;
 int splitterDragOffset = 0;
 int splitterXAtDragStart = 240;
@@ -191,6 +196,11 @@ bool isRefreshingPlaylistList = false;
 bool isRefreshingTrackList = false;
 bool appStateDirty = false;
 bool appStateTrackingEnabled = false;
+
+const wchar_t* T(UiText id)
+{
+    return GetUiText(id, activeLanguage);
+}
 
 enum class PlaylistListRowType
 {
@@ -283,6 +293,7 @@ AppState CaptureCurrentAppState()
     state.trackColumns = trackColumnConfigs;
     state.extinfFormatPreset = extinfFormatPreset;
     state.customExtinfFormat = customExtinfFormat;
+    state.language = languageSetting;
     return state;
 }
 
@@ -316,6 +327,8 @@ void ApplyLoadedAppState(AppState state)
     trackColumnConfigs = std::move(state.trackColumns);
     extinfFormatPreset = state.extinfFormatPreset;
     customExtinfFormat = std::move(state.customExtinfFormat);
+    activeLanguage = state.language;
+    languageSetting = state.language;
 }
 
 void ResetToDefaultAppState()
@@ -334,6 +347,8 @@ void ResetToDefaultAppState()
     trackColumnConfigs = MakeDefaultTrackColumnConfigs();
     extinfFormatPreset = ExtinfFormatPreset::ArtistTitle;
     customExtinfFormat = DefaultCustomExtinfFormat;
+    activeLanguage = AppLanguage::English;
+    languageSetting = AppLanguage::English;
     appStateDirty = false;
 }
 
@@ -572,22 +587,22 @@ std::wstring GetTrackColumnName(TrackColumnId id)
 {
     switch (id)
     {
-    case TrackColumnId::Title: return L"Title";
-    case TrackColumnId::Artist: return L"Artist";
-    case TrackColumnId::Album: return L"Album";
-    case TrackColumnId::Duration: return L"Duration";
-    case TrackColumnId::Comment: return L"Comment";
-    case TrackColumnId::Path: return L"Path";
-    case TrackColumnId::TrackNumber: return L"Track Number";
-    case TrackColumnId::Year: return L"Year";
-    case TrackColumnId::Genre: return L"Genre";
-    case TrackColumnId::AlbumArtist: return L"Album Artist";
-    case TrackColumnId::DiscNumber: return L"Disc Number";
-    case TrackColumnId::Format: return L"Format";
-    case TrackColumnId::Bitrate: return L"Bitrate";
-    case TrackColumnId::SampleRate: return L"Sample Rate";
-    case TrackColumnId::FileSize: return L"File Size";
-    case TrackColumnId::DateModified: return L"Date Modified";
+    case TrackColumnId::Title: return T(UiText::TitleColumn);
+    case TrackColumnId::Artist: return T(UiText::ArtistColumn);
+    case TrackColumnId::Album: return T(UiText::AlbumColumn);
+    case TrackColumnId::Duration: return T(UiText::DurationColumn);
+    case TrackColumnId::Comment: return T(UiText::CommentColumn);
+    case TrackColumnId::Path: return T(UiText::PathColumn);
+    case TrackColumnId::TrackNumber: return T(UiText::TrackNumberColumn);
+    case TrackColumnId::Year: return T(UiText::YearColumn);
+    case TrackColumnId::Genre: return T(UiText::GenreColumn);
+    case TrackColumnId::AlbumArtist: return T(UiText::AlbumArtistColumn);
+    case TrackColumnId::DiscNumber: return T(UiText::DiscNumberColumn);
+    case TrackColumnId::Format: return T(UiText::FormatColumn);
+    case TrackColumnId::Bitrate: return T(UiText::BitrateColumn);
+    case TrackColumnId::SampleRate: return T(UiText::SampleRateColumn);
+    case TrackColumnId::FileSize: return T(UiText::FileSizeColumn);
+    case TrackColumnId::DateModified: return T(UiText::DateModifiedColumn);
     }
     return L"";
 }
@@ -1033,7 +1048,7 @@ DurationSummary SummarizeTracks(const Playlist& playlist,
 std::wstring FormatDurationSummary(const DurationSummary& summary)
 {
     std::wstring text = std::to_wstring(summary.trackCount) +
-                        L" tracks / " +
+                        T(UiText::TracksStatus) +
                         FormatTotalDuration(summary.totalSeconds);
     if (summary.hasUnknownDuration)
     {
@@ -1060,8 +1075,10 @@ void RefreshStatusBar()
     }
 
     const std::wstring text =
-        L"Selected: " + FormatDurationSummary(selectedSummary) +
-        L" | Playlist: " + FormatDurationSummary(playlistSummary) + L"  ";
+        std::wstring(T(UiText::SelectedStatus)) +
+        FormatDurationSummary(selectedSummary) + L" | " +
+        T(UiText::PlaylistStatus) + FormatDurationSummary(playlistSummary) +
+        L"  ";
     SetWindowTextW(statusText, text.c_str());
 }
 
@@ -1181,10 +1198,11 @@ bool CreateMainMenuBar(HWND window)
     trackSendToMenu = CreatePopupMenu();
     settingsMenu = CreatePopupMenu();
     helpMenu = CreatePopupMenu();
+    languageMenu = CreatePopupMenu();
     if (menuBar == nullptr || fileMenu == nullptr ||
         playlistMenu == nullptr || trackMenu == nullptr ||
         trackSendToMenu == nullptr || settingsMenu == nullptr ||
-        helpMenu == nullptr)
+        helpMenu == nullptr || languageMenu == nullptr)
     {
         if (menuBar != nullptr) DestroyMenu(menuBar);
         if (fileMenu != nullptr) DestroyMenu(fileMenu);
@@ -1193,65 +1211,80 @@ bool CreateMainMenuBar(HWND window)
         if (trackSendToMenu != nullptr) DestroyMenu(trackSendToMenu);
         if (settingsMenu != nullptr) DestroyMenu(settingsMenu);
         if (helpMenu != nullptr) DestroyMenu(helpMenu);
+        if (languageMenu != nullptr) DestroyMenu(languageMenu);
         fileMenu = nullptr;
         playlistMenu = nullptr;
         trackMenu = nullptr;
         trackSendToMenu = nullptr;
         settingsMenu = nullptr;
         helpMenu = nullptr;
+        languageMenu = nullptr;
         return false;
     }
 
     AppendMenuW(fileMenu, MF_STRING, CommandOpenAudioFiles,
-                L"Open Audio Files...");
+                T(UiText::OpenAudioFiles));
     AppendMenuW(fileMenu, MF_STRING, CommandImportPlaylist,
-                L"Import Playlist...");
+                T(UiText::ImportPlaylist));
     AppendMenuW(fileMenu, MF_STRING, CommandExportM3U8,
-                L"Export M3U8...");
+                T(UiText::ExportM3U8));
     AppendMenuW(fileMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(fileMenu, MF_STRING, CommandExit, L"Exit");
+    AppendMenuW(fileMenu, MF_STRING, CommandExit, T(UiText::Exit));
 
     AppendMenuW(playlistMenu, MF_STRING, CommandNewPlaylist,
-                L"New Playlist");
+                T(UiText::NewPlaylist));
     AppendMenuW(playlistMenu, MF_STRING, CommandRenamePlaylist,
-                L"Rename Playlist");
+                T(UiText::RenamePlaylist));
     AppendMenuW(playlistMenu, MF_STRING, CommandDeletePlaylist,
-                L"Delete Playlist");
+                T(UiText::DeletePlaylist));
     AppendMenuW(playlistMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(playlistMenu, MF_STRING, CommandOrganizePlaylists,
-                L"Organize Playlists...");
+                T(UiText::OrganizePlaylists));
 
     AppendMenuW(trackMenu, MF_STRING, CommandGetTrackMetadata,
-                L"Get Metadata");
+                T(UiText::GetMetadata));
     AppendMenuW(trackMenu, MF_STRING, CommandOpenTracksInExplorer,
-                L"Open in Explorer");
+                T(UiText::OpenInExplorer));
     AppendMenuW(trackMenu, MF_STRING, CommandShowTrackProperties,
-                L"Properties");
+                T(UiText::Properties));
     AppendMenuW(trackMenu, MF_POPUP,
-                reinterpret_cast<UINT_PTR>(trackSendToMenu), L"Send to");
+                reinterpret_cast<UINT_PTR>(trackSendToMenu), T(UiText::SendTo));
     AppendMenuW(trackMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(trackMenu, MF_STRING, CommandDeleteTracks, L"Delete");
+    AppendMenuW(trackMenu, MF_STRING, CommandDeleteTracks, T(UiText::Delete));
+
+    AppendMenuW(languageMenu, MF_STRING, CommandLanguageEnglish,
+                T(UiText::EnglishLanguage));
+    AppendMenuW(languageMenu, MF_STRING, CommandLanguageJapanese,
+                T(UiText::JapaneseLanguage));
+    CheckMenuRadioItem(
+        languageMenu, CommandLanguageEnglish, CommandLanguageJapanese,
+        languageSetting == AppLanguage::Japanese
+            ? CommandLanguageJapanese : CommandLanguageEnglish,
+        MF_BYCOMMAND);
+    AppendMenuW(settingsMenu, MF_POPUP,
+                reinterpret_cast<UINT_PTR>(languageMenu),
+                T(UiText::LanguageMenu));
 
     AppendMenuW(settingsMenu, MF_STRING, CommandSendToApplications,
-                L"Send To Applications...");
+                T(UiText::SendToApplications));
     AppendMenuW(settingsMenu, MF_STRING, CommandTrackColumns,
-                L"Columns...");
+                T(UiText::Columns));
     AppendMenuW(settingsMenu, MF_STRING, CommandExtinfFormat,
-                L"EXTINF Format...");
+                T(UiText::ExtinfFormat));
 
     AppendMenuW(helpMenu, MF_STRING, CommandAbout,
-                L"About Playlist Manager...");
+                T(UiText::AboutPlaylistManager));
 
     AppendMenuW(menuBar, MF_POPUP,
-                reinterpret_cast<UINT_PTR>(fileMenu), L"&File");
+                reinterpret_cast<UINT_PTR>(fileMenu), T(UiText::FileMenu));
     AppendMenuW(menuBar, MF_POPUP,
-                reinterpret_cast<UINT_PTR>(playlistMenu), L"&Playlist");
+                reinterpret_cast<UINT_PTR>(playlistMenu), T(UiText::PlaylistMenu));
     AppendMenuW(menuBar, MF_POPUP,
-                reinterpret_cast<UINT_PTR>(trackMenu), L"&Track");
+                reinterpret_cast<UINT_PTR>(trackMenu), T(UiText::TrackMenu));
     AppendMenuW(menuBar, MF_POPUP,
-                reinterpret_cast<UINT_PTR>(settingsMenu), L"&Settings");
+                reinterpret_cast<UINT_PTR>(settingsMenu), T(UiText::SettingsMenu));
     AppendMenuW(menuBar, MF_POPUP,
-                reinterpret_cast<UINT_PTR>(helpMenu), L"&Help");
+                reinterpret_cast<UINT_PTR>(helpMenu), T(UiText::HelpMenu));
 
     if (!SetMenu(window, menuBar))
     {
@@ -1262,6 +1295,7 @@ bool CreateMainMenuBar(HWND window)
         trackSendToMenu = nullptr;
         settingsMenu = nullptr;
         helpMenu = nullptr;
+        languageMenu = nullptr;
         return false;
     }
     UpdateMainMenuState();
@@ -1372,8 +1406,8 @@ bool ExpandSendToArguments(const std::wstring& argumentsTemplate,
 void ShowSendToFailure(HWND owner, const SendToApplication& application,
                        const std::wstring& detail = L"")
 {
-    std::wstring message = L"Failed to send tracks to \"" +
-        application.name + L"\".";
+    std::wstring message = T(UiText::SendFailedPrefix) +
+        application.name + T(UiText::SendFailedSuffix);
     if (!detail.empty())
     {
         message += L"\n\n" + detail;
@@ -1424,7 +1458,7 @@ bool SendTrackPathsToApplication(HWND owner,
     {
         ShowSendToFailure(
             owner, application,
-            L"Arguments must contain exactly one of %files% or %folder%.");
+            T(UiText::ArgumentsPlaceholderRequired));
         return false;
     }
     if (!CanUseSendToApplication(
@@ -1457,14 +1491,14 @@ bool SendTrackPathsToApplication(HWND owner,
     if (!IsUsableTrackFile(application.executablePath))
     {
         ShowSendToFailure(owner, application,
-                          L"The configured executable does not exist.");
+                          T(UiText::ConfiguredExecutableMissing));
         return false;
     }
     if (!IsValidSendToArguments(application.arguments))
     {
         ShowSendToFailure(
             owner, application,
-            L"Arguments must contain exactly one of %files% or %folder%.");
+            T(UiText::ArgumentsPlaceholderRequired));
         return false;
     }
 
@@ -1473,7 +1507,7 @@ bool SendTrackPathsToApplication(HWND owner,
                                expandedArguments))
     {
         ShowSendToFailure(owner, application,
-                          L"The selected tracks could not be expanded.");
+                          T(UiText::SelectedTracksExpandFailed));
         return false;
     }
 
@@ -1487,7 +1521,7 @@ bool SendTrackPathsToApplication(HWND owner,
     if (commandLine.size() + 1 > MaximumWindowsCommandLineLength)
     {
         ShowSendToFailure(owner, application,
-                          L"Too many tracks to send in one command.");
+                          T(UiText::TooManyTracks));
         return false;
     }
 
@@ -1505,7 +1539,8 @@ bool SendTrackPathsToApplication(HWND owner,
         std::wstring detail = GetWindowsErrorMessage(errorCode);
         if (detail.empty())
         {
-            detail = L"Windows error " + std::to_wstring(errorCode) + L".";
+            detail = std::wstring(T(UiText::WindowsErrorPrefix)) +
+                std::to_wstring(errorCode) + L".";
         }
         ShowSendToFailure(owner, application, detail);
         return false;
@@ -2003,9 +2038,9 @@ void DeleteSelectedPlaylist(HWND window)
     if (!selectedPlaylist->tracks.empty())
     {
         const std::wstring message =
-            L"This playlist contains " +
-            std::to_wstring(selectedPlaylist->tracks.size()) +
-            L" tracks.\nDelete this playlist?";
+            T(UiText::DeletePlaylistQuestionPrefix) +
+            selectedPlaylist->name + T(UiText::DeletePlaylistQuestionSuffix) +
+            L"\n\n" + T(UiText::AudioFilesNotDeleted);
         if (MessageBoxW(window, message.c_str(), WindowTitle,
                         MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
         {
@@ -2056,7 +2091,7 @@ void ExportSelectedPlaylist(HWND window)
     Playlist* playlist = GetSelectedPlaylist();
     if (playlist == nullptr)
     {
-        MessageBoxW(window, L"No playlist selected.", WindowTitle,
+        MessageBoxW(window, T(UiText::NoPlaylistSelected), WindowTitle,
                     MB_OK | MB_ICONINFORMATION);
         return;
     }
@@ -2070,25 +2105,22 @@ void ExportSelectedPlaylist(HWND window)
         std::min(initialPath.size(), filePathBuffer.size() - 1);
     std::copy_n(initialPath.data(), copyLength, filePathBuffer.data());
 
-    constexpr wchar_t FileFilter[] =
-        L"m3u8 Playlist (*.m3u8)\0*.m3u8\0"
-        L"All Files (*.*)\0*.*\0";
     OPENFILENAMEW dialog{};
     dialog.lStructSize = sizeof(dialog);
     dialog.hwndOwner = window;
-    dialog.lpstrFilter = FileFilter;
+    dialog.lpstrFilter = T(UiText::M3U8FilesFilter);
     dialog.nFilterIndex = 1;
     dialog.lpstrFile = filePathBuffer.data();
     dialog.nMaxFile = static_cast<DWORD>(filePathBuffer.size());
     dialog.lpstrDefExt = L"m3u8";
-    dialog.lpstrTitle = L"Export Playlist as m3u8";
+    dialog.lpstrTitle = T(UiText::ExportPlaylistTitle);
     dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 
     if (!GetSaveFileNameW(&dialog))
     {
         if (CommDlgExtendedError() != 0)
         {
-            MessageBoxW(window, L"The Save dialog could not be opened.",
+            MessageBoxW(window, T(UiText::SaveDialogFailed),
                         WindowTitle, MB_OK | MB_ICONERROR);
         }
         return;
@@ -2101,12 +2133,12 @@ void ExportSelectedPlaylist(HWND window)
         playlist->filePath = filePathBuffer.data();
         playlist->isModified = false;
         MarkAppStateDirty();
-        MessageBoxW(window, L"The playlist was exported successfully.",
+        MessageBoxW(window, T(UiText::ExportSucceeded),
                     WindowTitle, MB_OK | MB_ICONINFORMATION);
     }
     catch (const std::exception&)
     {
-        MessageBoxW(window, L"Failed to export the m3u8 playlist.",
+        MessageBoxW(window, T(UiText::ExportFailed),
                     WindowTitle, MB_OK | MB_ICONERROR);
     }
 }
@@ -2181,18 +2213,19 @@ void ShowPlaylistContextMenu(HWND window, LPARAM lParam)
         return;
     }
 
-    AppendMenuW(menu, MF_STRING, CommandNewPlaylist, L"New Playlist");
+    AppendMenuW(menu, MF_STRING, CommandNewPlaylist,
+                T(UiText::NewPlaylist));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     const UINT selectionState = contextHasPlaylist
         ? MF_ENABLED
         : MF_GRAYED;
     AppendMenuW(menu, MF_STRING | selectionState,
-                CommandRenamePlaylist, L"Rename");
+                CommandRenamePlaylist, T(UiText::RenamePlaylist));
     AppendMenuW(menu, MF_STRING | selectionState,
-                CommandDeletePlaylist, L"Delete");
+                CommandDeletePlaylist, T(UiText::DeletePlaylist));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | selectionState,
-                CommandExportM3U8, L"Export m3u8...");
+                CommandExportM3U8, T(UiText::ExportM3U8));
 
     SetForegroundWindow(window);
     const UINT command = TrackPopupMenu(
@@ -2265,11 +2298,11 @@ void ShowTrackContextMenu(HWND window, LPARAM lParam)
         ? MF_ENABLED
         : MF_GRAYED;
     AppendMenuW(menu, MF_STRING | selectionState,
-                CommandGetTrackMetadata, L"Get Metadata");
+                CommandGetTrackMetadata, T(UiText::GetMetadata));
     AppendMenuW(menu, MF_STRING | shellOperationState,
-                CommandOpenTracksInExplorer, L"Open in Explorer");
+                CommandOpenTracksInExplorer, T(UiText::OpenInExplorer));
     AppendMenuW(menu, MF_STRING | shellOperationState,
-                CommandShowTrackProperties, L"Properties");
+                CommandShowTrackProperties, T(UiText::Properties));
     for (std::size_t index = 0; index < sendToApplications.size(); ++index)
     {
         const bool canUse = CanUseSendToApplication(
@@ -2289,10 +2322,10 @@ void ShowTrackContextMenu(HWND window, LPARAM lParam)
     const UINT sendToState = canUseAnySendToApplication
         ? MF_ENABLED : MF_GRAYED;
     AppendMenuW(menu, MF_POPUP | sendToState,
-                reinterpret_cast<UINT_PTR>(sendToMenu), L"Send to");
+                reinterpret_cast<UINT_PTR>(sendToMenu), T(UiText::SendTo));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | selectionState,
-                CommandDeleteTracks, L"Delete Track");
+                CommandDeleteTracks, T(UiText::Delete));
 
     SetForegroundWindow(window);
     const UINT command = TrackPopupMenu(
@@ -2396,8 +2429,7 @@ M3U8LoadMode ChooseM3U8LoadMode(HWND window, const std::wstring& filePath)
     if (GetSelectedPlaylist() == nullptr)
     {
         const std::wstring message =
-            L"No playlist is selected.\n\nLoad this m3u8 as a new playlist?\n\n" +
-            filePath;
+            T(UiText::LoadNewPlaylistPrompt) + filePath;
         return MessageBoxW(window, message.c_str(), WindowTitle,
                            MB_OKCANCEL | MB_ICONQUESTION) == IDOK
             ? M3U8LoadMode::NewPlaylist
@@ -2405,10 +2437,8 @@ M3U8LoadMode ChooseM3U8LoadMode(HWND window, const std::wstring& filePath)
     }
 
     const std::wstring message =
-        L"Load this m3u8 playlist?\n\n" + filePath +
-        L"\n\nYes: Add as a new playlist"
-        L"\nNo: Append to the current playlist"
-        L"\nCancel: Do nothing";
+        T(UiText::LoadPlaylistPrompt) + filePath +
+        T(UiText::LoadPlaylistOptions);
     switch (MessageBoxW(window, message.c_str(), WindowTitle,
                         MB_YESNOCANCEL | MB_ICONQUESTION))
     {
@@ -2436,9 +2466,7 @@ void ImportM3U8(HWND window, const std::wstring& filePath)
     }
     catch (const std::exception&)
     {
-        MessageBoxW(window,
-                    L"Failed to load the m3u8 file.\n"
-                    L"The file must be readable UTF-8 text.",
+        MessageBoxW(window, T(UiText::LoadM3U8Failed),
                     WindowTitle, MB_OK | MB_ICONERROR);
         return;
     }
@@ -2485,18 +2513,14 @@ std::vector<std::wstring> SelectAudioFiles(HWND window)
 {
     constexpr DWORD FilePathBufferLength = 32768;
     std::vector<wchar_t> buffer(FilePathBufferLength, L'\0');
-    constexpr wchar_t FileFilter[] =
-        L"Audio Files (*.mp3;*.flac;*.wav;*.m4a;*.ogg)\0"
-        L"*.mp3;*.flac;*.wav;*.m4a;*.ogg\0";
-
     OPENFILENAMEW dialog{};
     dialog.lStructSize = sizeof(dialog);
     dialog.hwndOwner = window;
-    dialog.lpstrFilter = FileFilter;
+    dialog.lpstrFilter = T(UiText::AudioFilesFilter);
     dialog.nFilterIndex = 1;
     dialog.lpstrFile = buffer.data();
     dialog.nMaxFile = static_cast<DWORD>(buffer.size());
-    dialog.lpstrTitle = L"Open Audio Files";
+    dialog.lpstrTitle = T(UiText::OpenAudioFilesTitle);
     dialog.Flags = OFN_ALLOWMULTISELECT | OFN_EXPLORER |
                    OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
                    OFN_NOCHANGEDIR;
@@ -2505,7 +2529,7 @@ std::vector<std::wstring> SelectAudioFiles(HWND window)
     {
         if (CommDlgExtendedError() != 0)
         {
-            MessageBoxW(window, L"The Open dialog could not be opened.",
+            MessageBoxW(window, T(UiText::OpenDialogFailed),
                         WindowTitle, MB_OK | MB_ICONERROR);
         }
         return {};
@@ -2532,7 +2556,7 @@ void OpenAudioFiles(HWND window)
 {
     if (!HasSelectedPlaylist())
     {
-        MessageBoxW(window, L"No playlist selected. Create a playlist first.",
+        MessageBoxW(window, T(UiText::CreatePlaylistFirst),
                     WindowTitle, MB_OK | MB_ICONINFORMATION);
         return;
     }
@@ -2554,18 +2578,15 @@ void ImportPlaylistFromDialog(HWND window)
 {
     constexpr DWORD FilePathBufferLength = 32768;
     std::vector<wchar_t> buffer(FilePathBufferLength, L'\0');
-    constexpr wchar_t FileFilter[] =
-        L"m3u8 Playlist (*.m3u8)\0*.m3u8\0";
-
     OPENFILENAMEW dialog{};
     dialog.lStructSize = sizeof(dialog);
     dialog.hwndOwner = window;
-    dialog.lpstrFilter = FileFilter;
+    dialog.lpstrFilter = T(UiText::M3U8FilesFilter);
     dialog.nFilterIndex = 1;
     dialog.lpstrFile = buffer.data();
     dialog.nMaxFile = static_cast<DWORD>(buffer.size());
     dialog.lpstrDefExt = L"m3u8";
-    dialog.lpstrTitle = L"Import Playlist";
+    dialog.lpstrTitle = T(UiText::ImportPlaylistTitle);
     dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
                    OFN_NOCHANGEDIR;
 
@@ -2573,7 +2594,7 @@ void ImportPlaylistFromDialog(HWND window)
     {
         if (CommDlgExtendedError() != 0)
         {
-            MessageBoxW(window, L"The Open dialog could not be opened.",
+            MessageBoxW(window, T(UiText::OpenDialogFailed),
                         WindowTitle, MB_OK | MB_ICONERROR);
         }
         return;
@@ -2615,7 +2636,7 @@ void HandleDroppedFiles(HWND window, HDROP drop)
                 else if (!showedNoPlaylistMessage)
                 {
                     MessageBoxW(window,
-                                L"No playlist selected. Create a playlist first.",
+                                T(UiText::CreatePlaylistFirst),
                                 WindowTitle, MB_OK | MB_ICONINFORMATION);
                     showedNoPlaylistMessage = true;
                 }
@@ -2806,9 +2827,10 @@ void ConfirmAndDeleteOrganizerGroup(HWND window, int groupId)
         return;
     }
 
-    const std::wstring message =
-        L"Delete group \"" + group->name + L"\"?";
-    if (MessageBoxW(window, message.c_str(), L"Playlist Organizer",
+    const std::wstring message = T(UiText::DeleteGroupQuestionPrefix) +
+        group->name + T(UiText::DeleteGroupQuestionSuffix);
+    if (MessageBoxW(window, message.c_str(),
+                    T(UiText::PlaylistOrganizerTitle),
                     MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
     {
         DeletePlaylistGroup(groupId);
@@ -2932,23 +2954,21 @@ void ConfirmAndDeleteOrganizerPlaylists(HWND window)
         {
             return;
         }
-        message = L"Delete playlist \"" +
-            playlists[static_cast<std::size_t>(playlistIndex)].name + L"\"?";
+        message = T(UiText::DeletePlaylistQuestionPrefix) +
+            playlists[static_cast<std::size_t>(playlistIndex)].name +
+            T(UiText::DeletePlaylistQuestionSuffix);
     }
     else
     {
-        message = L"Delete " + std::to_wstring(playlistIndices.size()) +
-            L" playlists?";
+        message = std::wstring(T(UiText::DeletePlaylistsQuestionPrefix)) +
+            std::to_wstring(playlistIndices.size()) +
+            T(UiText::DeletePlaylistsQuestionSuffix);
     }
-    message += L"\n\nThis removes the playlist";
-    if (playlistIndices.size() != 1)
-    {
-        message += L"s";
-    }
-    message += L" from Playlist Manager.\n"
-               L"Audio files and playlist files will not be deleted.";
+    message += L"\n\n";
+    message += T(UiText::AudioFilesNotDeleted);
 
-    if (MessageBoxW(window, message.c_str(), L"Playlist Organizer",
+    if (MessageBoxW(window, message.c_str(),
+                    T(UiText::PlaylistOrganizerTitle),
                     MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES)
     {
         DeletePlaylistsByIndices(playlistIndices);
@@ -3185,17 +3205,18 @@ void ShowOrganizerGroupContextMenu(HWND window, LPARAM lParam)
     {
         return;
     }
-    AppendMenuW(menu, MF_STRING, OrganizerCommandNewGroup, L"New Group");
+    AppendMenuW(menu, MF_STRING, OrganizerCommandNewGroup,
+                T(UiText::NewGroup));
     const bool canRename = organizerContextGroupId != -1 &&
         organizerContextGroupId != NewPlaylistGroupId;
     AppendMenuW(menu,
                 MF_STRING | (!canRename
                     ? MF_GRAYED : MF_ENABLED),
-                OrganizerCommandRenameGroup, L"Rename Group");
+                OrganizerCommandRenameGroup, T(UiText::RenameGroup));
     AppendMenuW(menu,
                 MF_STRING | (CanDeletePlaylistGroup(organizerContextGroupId)
                     ? MF_ENABLED : MF_GRAYED),
-                OrganizerCommandDeleteGroup, L"Delete Group");
+                OrganizerCommandDeleteGroup, T(UiText::DeleteGroup));
     const UINT command = TrackPopupMenu(
         menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
         screenPoint.x, screenPoint.y, 0, window, nullptr);
@@ -3286,10 +3307,10 @@ void ShowOrganizerPlaylistContextMenu(HWND window, LPARAM lParam)
                     command, group.name.c_str());
     }
     AppendMenuW(menu, MF_POPUP,
-                reinterpret_cast<UINT_PTR>(moveMenu), L"Move to");
+                reinterpret_cast<UINT_PTR>(moveMenu), T(UiText::MoveTo));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, OrganizerCommandDeletePlaylists,
-                L"Delete Playlist");
+                T(UiText::DeletePlaylist));
 
     const UINT command = TrackPopupMenu(
         menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
@@ -3347,11 +3368,11 @@ LRESULT CALLBACK PlaylistOrganizerWindowProcedure(
     {
         const HINSTANCE instance = reinterpret_cast<LPCREATESTRUCTW>(
             lParam)->hInstance;
-        CreateWindowExW(0, WC_STATICW, L"Groups",
+        CreateWindowExW(0, WC_STATICW, T(UiText::GroupsLabel),
                         WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
                         window, reinterpret_cast<HMENU>(2201), instance,
                         nullptr);
-        CreateWindowExW(0, WC_STATICW, L"Playlists",
+        CreateWindowExW(0, WC_STATICW, T(UiText::PlaylistsLabel),
                         WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
                         window, reinterpret_cast<HMENU>(2202), instance,
                         nullptr);
@@ -3368,12 +3389,13 @@ LRESULT CALLBACK PlaylistOrganizerWindowProcedure(
             reinterpret_cast<HMENU>(OrganizerPlaylistListId), instance,
             nullptr);
         organizerNewGroupButton = CreateWindowExW(
-            0, WC_BUTTONW, L"New Group", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            0, WC_BUTTONW, T(UiText::NewGroup),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             0, 0, 0, 0, window,
             reinterpret_cast<HMENU>(OrganizerNewGroupButtonId), instance,
             nullptr);
         organizerCloseButton = CreateWindowExW(
-            0, WC_BUTTONW, L"Close",
+            0, WC_BUTTONW, T(UiText::Close),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
             0, 0, 0, 0, window,
             reinterpret_cast<HMENU>(OrganizerCloseButtonId), instance,
@@ -3390,8 +3412,8 @@ LRESULT CALLBACK PlaylistOrganizerWindowProcedure(
         ListView_SetExtendedListViewStyle(
             organizerPlaylistList,
             LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
-        InsertColumn(organizerGroupList, 0, L"Group", 220);
-        InsertColumn(organizerPlaylistList, 0, L"Playlist", 480);
+        InsertColumn(organizerGroupList, 0, T(UiText::GroupHeader), 220);
+        InsertColumn(organizerPlaylistList, 0, T(UiText::PlaylistHeader), 480);
         RefreshOrganizerGroupList();
         return 0;
     }
@@ -3476,8 +3498,8 @@ LRESULT CALLBACK PlaylistOrganizerWindowProcedure(
                                                edit->item.pszText))
             {
                 MessageBoxW(window,
-                            L"Group names must be non-empty and unique.",
-                            L"Playlist Organizer",
+                            T(UiText::GroupNamesUnique),
+                            T(UiText::PlaylistOrganizerTitle),
                             MB_OK | MB_ICONINFORMATION);
                 return FALSE;
             }
@@ -3533,8 +3555,7 @@ void ShowPlaylistOrganizer(HWND owner)
     if (!SaveAppState(CaptureCurrentAppState()))
     {
         MessageBoxW(owner,
-                    L"The application state could not be saved before "
-                    L"opening the organizer.",
+                    T(UiText::StateSaveFailed),
                     WindowTitle, MB_OK | MB_ICONWARNING);
     }
     else
@@ -3565,7 +3586,7 @@ void ShowPlaylistOrganizer(HWND owner)
                   ((ownerRect.bottom - ownerRect.top) - height) / 2;
     organizerWindow = CreateWindowExW(
         WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
-        OrganizerWindowClassName, L"Playlist Organizer",
+        OrganizerWindowClassName, T(UiText::PlaylistOrganizerTitle),
         WS_OVERLAPPEDWINDOW, x, y, width, height,
         owner, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (organizerWindow == nullptr)
@@ -3708,49 +3729,49 @@ bool ValidateSendToApplication(HWND owner,
 {
     if (!HasNonWhitespaceText(application.name))
     {
-        MessageBoxW(owner, L"Name is required.", L"Send To Applications",
+        MessageBoxW(owner, T(UiText::NameRequired),
+                    T(UiText::SendToWindowTitle),
                     MB_OK | MB_ICONINFORMATION);
         return false;
     }
     if (!IsSendToNameAvailable(application.name, ignoreIndex))
     {
-        MessageBoxW(owner, L"Application names must be unique.",
-                    L"Send To Applications", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(owner, T(UiText::ApplicationNamesUnique),
+                    T(UiText::SendToWindowTitle), MB_OK | MB_ICONINFORMATION);
         return false;
     }
     if (!HasNonWhitespaceText(application.executablePath))
     {
-        MessageBoxW(owner, L"Executable is required.",
-                    L"Send To Applications", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(owner, T(UiText::ExecutableRequired),
+                    T(UiText::SendToWindowTitle), MB_OK | MB_ICONINFORMATION);
         return false;
     }
     std::error_code error;
     if (!std::filesystem::is_regular_file(application.executablePath, error) ||
         error)
     {
-        MessageBoxW(owner, L"Executable must be an existing file.",
-                    L"Send To Applications", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(owner, T(UiText::ExecutableMustExist),
+                    T(UiText::SendToWindowTitle), MB_OK | MB_ICONINFORMATION);
         return false;
     }
     if (!HasNonWhitespaceText(application.arguments))
     {
-        MessageBoxW(owner, L"Arguments are required.",
-                    L"Send To Applications", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(owner, T(UiText::ArgumentsRequired),
+                    T(UiText::SendToWindowTitle), MB_OK | MB_ICONINFORMATION);
         return false;
     }
     if (!IsValidSendToArguments(application.arguments))
     {
         MessageBoxW(owner,
-                    L"Arguments must contain exactly one of:\n"
-                    L"%files%\n%folder%",
-                    L"Send To Applications", MB_OK | MB_ICONINFORMATION);
+                    T(UiText::ArgumentsPlaceholderRequired),
+                    T(UiText::SendToWindowTitle), MB_OK | MB_ICONINFORMATION);
         return false;
     }
     if (ignoreIndex < 0 &&
         sendToApplications.size() >= MaximumSendToApplications)
     {
-        MessageBoxW(owner, L"Up to 15 applications can be registered.",
-                    L"Send To Applications", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(owner, T(UiText::ApplicationLimit),
+                    T(UiText::SendToWindowTitle), MB_OK | MB_ICONINFORMATION);
         return false;
     }
     return true;
@@ -3812,17 +3833,16 @@ void BrowseForSendToExecutable(HWND owner)
     {
         std::copy(current.begin(), current.end(), path.begin());
     }
-    constexpr wchar_t filter[] =
-        L"Applications (*.exe)\0*.exe\0All files (*.*)\0*.*\0\0";
     OPENFILENAMEW dialog{};
     dialog.lStructSize = sizeof(dialog);
     dialog.hwndOwner = owner;
-    dialog.lpstrFilter = filter;
+    dialog.lpstrFilter = T(UiText::ApplicationsFilter);
     dialog.lpstrFile = path.data();
     dialog.nMaxFile = static_cast<DWORD>(path.size());
     dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
                    OFN_HIDEREADONLY;
     dialog.lpstrDefExt = L"exe";
+    dialog.lpstrTitle = T(UiText::SelectExecutableTitle);
     if (GetOpenFileNameW(&dialog))
     {
         SetWindowTextW(sendToEditorExecutable, path.data());
@@ -3874,13 +3894,19 @@ LRESULT CALLBACK SendToEditorWindowProcedure(
     {
         const HINSTANCE instance = reinterpret_cast<LPCREATESTRUCTW>(
             lParam)->hInstance;
-        CreateWindowExW(0, WC_STATICW, L"Name:", WS_CHILD | WS_VISIBLE,
+        const std::wstring nameLabel = std::wstring(T(UiText::Name)) + L":";
+        const std::wstring executableLabel =
+            std::wstring(T(UiText::Executable)) + L":";
+        const std::wstring argumentsLabel =
+            std::wstring(T(UiText::Arguments)) + L":";
+        CreateWindowExW(0, WC_STATICW, nameLabel.c_str(),
+                        WS_CHILD | WS_VISIBLE,
                         0, 0, 0, 0, window,
                         reinterpret_cast<HMENU>(3201), instance, nullptr);
-        CreateWindowExW(0, WC_STATICW, L"Executable:",
+        CreateWindowExW(0, WC_STATICW, executableLabel.c_str(),
                         WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window,
                         reinterpret_cast<HMENU>(3202), instance, nullptr);
-        CreateWindowExW(0, WC_STATICW, L"Arguments:",
+        CreateWindowExW(0, WC_STATICW, argumentsLabel.c_str(),
                         WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window,
                         reinterpret_cast<HMENU>(3203), instance, nullptr);
         sendToEditorName = CreateWindowExW(
@@ -3900,17 +3926,17 @@ LRESULT CALLBACK SendToEditorWindowProcedure(
             0, 0, 0, 0, window,
             reinterpret_cast<HMENU>(SendToEditorArgumentsId), instance,
             nullptr);
-        CreateWindowExW(0, WC_BUTTONW, L"Browse...",
+        CreateWindowExW(0, WC_BUTTONW, T(UiText::Browse),
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                         0, 0, 0, 0, window,
                         reinterpret_cast<HMENU>(SendToEditorBrowseId),
                         instance, nullptr);
-        CreateWindowExW(0, WC_BUTTONW, L"OK",
+        CreateWindowExW(0, WC_BUTTONW, T(UiText::Ok),
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
                         0, 0, 0, 0, window,
                         reinterpret_cast<HMENU>(SendToEditorOkId), instance,
                         nullptr);
-        CreateWindowExW(0, WC_BUTTONW, L"Cancel",
+        CreateWindowExW(0, WC_BUTTONW, T(UiText::Cancel),
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                         0, 0, 0, 0, window,
                         reinterpret_cast<HMENU>(SendToEditorCancelId),
@@ -4002,8 +4028,8 @@ void ShowSendToApplicationEditor(int applicationIndex)
     sendToEditorWindow = CreateWindowExW(
         WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
         SendToEditorWindowClassName,
-        applicationIndex < 0 ? L"Add Send To Application"
-                             : L"Edit Send To Application",
+        applicationIndex < 0 ? T(UiText::AddSendToApplication)
+                             : T(UiText::EditSendToApplication),
         WS_CAPTION | WS_SYSMENU | WS_SIZEBOX,
         ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2,
         ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2,
@@ -4035,10 +4061,10 @@ void RemoveSelectedSendToApplication(HWND owner)
     {
         return;
     }
-    const std::wstring message = L"Remove \"" +
+    const std::wstring message = T(UiText::RemoveSendToPrefix) +
         sendToApplications[static_cast<std::size_t>(index)].name +
-        L"\" from Send To applications?";
-    if (MessageBoxW(owner, message.c_str(), L"Send To Applications",
+        T(UiText::RemoveSendToSuffix);
+    if (MessageBoxW(owner, message.c_str(), T(UiText::SendToWindowTitle),
                     MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
     {
         return;
@@ -4117,15 +4143,18 @@ LRESULT CALLBACK SendToSettingsWindowProcedure(
             0, 0, 0, 0, window, reinterpret_cast<HMENU>(SendToListId),
             instance, nullptr);
         sendToAddButton = CreateWindowExW(
-            0, WC_BUTTONW, L"Add", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            0, WC_BUTTONW, T(UiText::Add),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             0, 0, 0, 0, window,
             reinterpret_cast<HMENU>(SendToAddButtonId), instance, nullptr);
         sendToEditButton = CreateWindowExW(
-            0, WC_BUTTONW, L"Edit", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            0, WC_BUTTONW, T(UiText::Edit),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             0, 0, 0, 0, window,
             reinterpret_cast<HMENU>(SendToEditButtonId), instance, nullptr);
         sendToRemoveButton = CreateWindowExW(
-            0, WC_BUTTONW, L"Remove", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            0, WC_BUTTONW, T(UiText::Remove),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             0, 0, 0, 0, window,
             reinterpret_cast<HMENU>(SendToRemoveButtonId), instance, nullptr);
         sendToMoveUpButton = CreateWindowExW(
@@ -4138,7 +4167,7 @@ LRESULT CALLBACK SendToSettingsWindowProcedure(
             reinterpret_cast<HMENU>(SendToMoveDownButtonId), instance,
             nullptr);
         sendToCloseButton = CreateWindowExW(
-            0, WC_BUTTONW, L"Close",
+            0, WC_BUTTONW, T(UiText::Close),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
             0, 0, 0, 0, window,
             reinterpret_cast<HMENU>(SendToCloseButtonId), instance, nullptr);
@@ -4152,8 +4181,8 @@ LRESULT CALLBACK SendToSettingsWindowProcedure(
         }
         ListView_SetExtendedListViewStyle(
             sendToList, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
-        InsertColumn(sendToList, 0, L"Name", 220);
-        InsertColumn(sendToList, 1, L"Executable", 480);
+        InsertColumn(sendToList, 0, T(UiText::Name), 220);
+        InsertColumn(sendToList, 1, T(UiText::Executable), 480);
         RefreshSendToApplicationsList();
         return 0;
     }
@@ -4229,7 +4258,7 @@ void ShowSendToApplications(HWND owner)
     constexpr int height = 460;
     sendToSettingsWindow = CreateWindowExW(
         WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
-        SendToSettingsWindowClassName, L"Send To Applications",
+        SendToSettingsWindowClassName, T(UiText::SendToWindowTitle),
         WS_OVERLAPPEDWINDOW,
         ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2,
         ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2,
@@ -4302,7 +4331,8 @@ void ShowCustomExtinfEditor(HWND owner)
     constexpr int height = 205;
     customExtinfEditorWindow = CreateWindowExW(
         WS_EX_DLGMODALFRAME, CustomExtinfEditorWindowClassName,
-        L"Custom EXTINF Format", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        T(UiText::CustomExtinfWindowTitle),
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
         ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2,
         ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2,
         width, height, owner, nullptr,
@@ -4334,7 +4364,9 @@ LRESULT CALLBACK CustomExtinfEditorWindowProcedure(
     {
         const HINSTANCE instance =
             reinterpret_cast<LPCREATESTRUCTW>(lParam)->hInstance;
-        CreateWindowExW(0, WC_STATICW, L"Format:",
+        const std::wstring formatLabel =
+            std::wstring(T(UiText::FormatColumn)) + L":";
+        CreateWindowExW(0, WC_STATICW, formatLabel.c_str(),
                         WS_CHILD | WS_VISIBLE, 14, 16, 70, 22,
                         window, nullptr, instance, nullptr);
         customExtinfEdit = CreateWindowExW(
@@ -4343,21 +4375,19 @@ LRESULT CALLBACK CustomExtinfEditorWindowProcedure(
             84, 13, 505, 25, window,
             reinterpret_cast<HMENU>(CustomExtinfEditId), instance, nullptr);
         CreateWindowExW(0, WC_STATICW,
-                        L"Fields: {title}, {artist}, {album}, {comment}, "
-                        L"{tracknumber}, {year}, {genre}",
+                        T(UiText::FieldsHelpOne),
                         WS_CHILD | WS_VISIBLE, 14, 51, 575, 22,
                         window, nullptr, instance, nullptr);
         CreateWindowExW(0, WC_STATICW,
-                        L"{albumartist}, {discnumber}, {format}, {bitrate}, "
-                        L"{samplerate}, {filesize}, {datemodified}",
+                        T(UiText::FieldsHelpTwo),
                         WS_CHILD | WS_VISIBLE, 55, 74, 534, 22,
                         window, nullptr, instance, nullptr);
-        CreateWindowExW(0, WC_BUTTONW, L"OK",
+        CreateWindowExW(0, WC_BUTTONW, T(UiText::Ok),
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
                         427, 118, 76, 28, window,
                         reinterpret_cast<HMENU>(CustomExtinfOkId), instance,
                         nullptr);
-        CreateWindowExW(0, WC_BUTTONW, L"Cancel",
+        CreateWindowExW(0, WC_BUTTONW, T(UiText::Cancel),
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                         513, 118, 76, 28, window,
                         reinterpret_cast<HMENU>(CustomExtinfCancelId), instance,
@@ -4378,7 +4408,8 @@ LRESULT CALLBACK CustomExtinfEditorWindowProcedure(
             std::wstring error;
             if (!ValidateExtinfFormat(candidate, &error))
             {
-                MessageBoxW(window, error.c_str(), L"Custom EXTINF Format",
+                MessageBoxW(window, T(UiText::InvalidExtinfFormat),
+                            T(UiText::CustomExtinfWindowTitle),
                             MB_OK | MB_ICONINFORMATION);
                 SetFocus(customExtinfEdit);
                 return 0;
@@ -4422,30 +4453,34 @@ LRESULT CALLBACK ExtinfFormatWindowProcedure(
     {
         const HINSTANCE instance =
             reinterpret_cast<LPCREATESTRUCTW>(lParam)->hInstance;
-        CreateWindowExW(0, WC_STATICW, L"Preset:", WS_CHILD | WS_VISIBLE,
+        CreateWindowExW(0, WC_STATICW, T(UiText::Preset),
+                        WS_CHILD | WS_VISIBLE,
                         16, 16, 90, 22, window, nullptr, instance, nullptr);
-        CreateWindowExW(0, WC_BUTTONW, L"Artist - Title",
+        CreateWindowExW(0, WC_BUTTONW, T(UiText::ArtistTitlePreset),
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON |
                             WS_GROUP,
                         30, 43, 220, 24, window,
                         reinterpret_cast<HMENU>(ExtinfArtistTitleRadioId),
                         instance, nullptr);
-        CreateWindowExW(0, WC_BUTTONW, L"Title",
+        CreateWindowExW(0, WC_BUTTONW, T(UiText::TitlePreset),
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
                         30, 70, 220, 24, window,
                         reinterpret_cast<HMENU>(ExtinfTitleRadioId), instance,
                         nullptr);
-        CreateWindowExW(0, WC_BUTTONW, L"Artist - Title - Album",
+        CreateWindowExW(0, WC_BUTTONW, T(UiText::ArtistTitleAlbumPreset),
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
                         30, 97, 220, 24, window,
                         reinterpret_cast<HMENU>(ExtinfArtistTitleAlbumRadioId),
                         instance, nullptr);
-        CreateWindowExW(0, WC_BUTTONW, L"Custom",
+        CreateWindowExW(0, WC_BUTTONW, T(UiText::Custom),
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
                         30, 124, 220, 24, window,
                         reinterpret_cast<HMENU>(ExtinfCustomRadioId), instance,
                         nullptr);
-        CreateWindowExW(0, WC_STATICW, L"Custom:", WS_CHILD | WS_VISIBLE,
+        const std::wstring customLabel =
+            std::wstring(T(UiText::Custom)) + L":";
+        CreateWindowExW(0, WC_STATICW, customLabel.c_str(),
+                        WS_CHILD | WS_VISIBLE,
                         16, 164, 80, 22, window, nullptr, instance, nullptr);
         extinfCustomText = CreateWindowExW(
             WS_EX_CLIENTEDGE, WC_EDITW, L"",
@@ -4453,17 +4488,20 @@ LRESULT CALLBACK ExtinfFormatWindowProcedure(
             16, 188, 430, 25, window,
             reinterpret_cast<HMENU>(ExtinfCustomTextId), instance, nullptr);
         extinfEditButton = CreateWindowExW(
-            0, WC_BUTTONW, L"Edit...", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            0, WC_BUTTONW,
+            (std::wstring(T(UiText::Edit)) + L"...").c_str(),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             456, 187, 80, 27, window,
             reinterpret_cast<HMENU>(ExtinfEditButtonId), instance, nullptr);
-        CreateWindowExW(0, WC_STATICW, L"Preview:", WS_CHILD | WS_VISIBLE,
+        CreateWindowExW(0, WC_STATICW, T(UiText::Preview),
+                        WS_CHILD | WS_VISIBLE,
                         16, 235, 80, 22, window, nullptr, instance, nullptr);
         extinfPreviewText = CreateWindowExW(
             WS_EX_CLIENTEDGE, WC_STATICW, L"",
             WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
             16, 259, 520, 32, window,
             reinterpret_cast<HMENU>(ExtinfPreviewTextId), instance, nullptr);
-        CreateWindowExW(0, WC_BUTTONW, L"Close",
+        CreateWindowExW(0, WC_BUTTONW, T(UiText::Close),
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
                         456, 310, 80, 28, window,
                         reinterpret_cast<HMENU>(ExtinfCloseButtonId), instance,
@@ -4533,7 +4571,8 @@ void ShowExtinfFormatSettings(HWND owner)
     constexpr int width = 570;
     constexpr int height = 390;
     extinfFormatWindow = CreateWindowExW(
-        WS_EX_DLGMODALFRAME, ExtinfFormatWindowClassName, L"EXTINF Format",
+        WS_EX_DLGMODALFRAME, ExtinfFormatWindowClassName,
+        T(UiText::ExtinfWindowTitle),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
         ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2,
         ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2,
@@ -4667,7 +4706,7 @@ LRESULT CALLBACK TrackColumnsWindowProcedure(
             0, 0, 0, 0, window,
             reinterpret_cast<HMENU>(TrackColumnsDownButtonId), instance, nullptr);
         trackColumnsCloseButton = CreateWindowExW(
-            0, WC_BUTTONW, L"Close",
+            0, WC_BUTTONW, T(UiText::Close),
             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
             0, 0, 0, 0, window,
             reinterpret_cast<HMENU>(TrackColumnsCloseButtonId), instance, nullptr);
@@ -4680,7 +4719,7 @@ LRESULT CALLBACK TrackColumnsWindowProcedure(
         ListView_SetExtendedListViewStyle(
             trackColumnsList, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT |
                                   LVS_EX_DOUBLEBUFFER);
-        InsertColumn(trackColumnsList, 0, L"Column", 250);
+        InsertColumn(trackColumnsList, 0, T(UiText::ColumnHeader), 250);
         RefreshTrackColumnsSettingsList();
         LayoutTrackColumnsWindow(window);
         return 0;
@@ -4770,7 +4809,8 @@ void ShowTrackColumns(HWND owner)
     constexpr int width = 430;
     constexpr int height = 510;
     trackColumnsWindow = CreateWindowExW(
-        WS_EX_DLGMODALFRAME, TrackColumnsWindowClassName, L"Track Columns",
+        WS_EX_DLGMODALFRAME, TrackColumnsWindowClassName,
+        T(UiText::TrackColumnsWindowTitle),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
         ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2,
         ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2,
@@ -4846,7 +4886,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             playlistListView, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
         ListView_SetExtendedListViewStyle(
             trackListView, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
-        InsertColumn(playlistListView, 0, L"Playlist", splitterX);
+        InsertColumn(playlistListView, 0, T(UiText::PlaylistHeader), splitterX);
         RefreshPlaylistList(playlistListView);
         RebuildTrackListColumns();
         DragAcceptFiles(window, TRUE);
@@ -4887,12 +4927,35 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             ShowExtinfFormatSettings(window);
             return 0;
         case CommandAbout:
+        {
+            const std::wstring about = std::wstring(T(UiText::AboutBodyPrefix)) +
+                APP_VERSION_WSTRING + T(UiText::AboutBodySuffix);
             MessageBoxW(
-                window,
-                L"Playlist Manager\n\nVersion " APP_VERSION_WSTRING
-                L"\n\nA playlist management application for Windows.",
-                L"About Playlist Manager", MB_OK | MB_ICONINFORMATION);
+                window, about.c_str(), T(UiText::AboutTitle),
+                MB_OK | MB_ICONINFORMATION);
             return 0;
+        }
+        case CommandLanguageEnglish:
+        case CommandLanguageJapanese:
+        {
+            const AppLanguage selected = LOWORD(wParam) ==
+                CommandLanguageJapanese ? AppLanguage::Japanese
+                                        : AppLanguage::English;
+            if (languageSetting == selected)
+                return 0;
+            languageSetting = selected;
+            CheckMenuRadioItem(
+                languageMenu, CommandLanguageEnglish,
+                CommandLanguageJapanese, LOWORD(wParam), MF_BYCOMMAND);
+            MarkAppStateDirty();
+            const bool saved = SaveCurrentAppState();
+            MessageBoxW(window,
+                        T(saved ? UiText::LanguageSaved
+                                : UiText::LanguageSaveFailed),
+                        WindowTitle,
+                        MB_OK | (saved ? MB_ICONINFORMATION : MB_ICONERROR));
+            return 0;
+        }
         case CommandNewPlaylist:
             CreateNewPlaylist();
             return 0;
@@ -5250,7 +5313,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         if (appStateDirty && !SaveCurrentAppState())
         {
             MessageBoxW(window,
-                        L"The application state could not be saved.",
+                        T(UiText::StateSaveFailed),
                         WindowTitle, MB_OK | MB_ICONWARNING);
         }
         DestroyWindow(window);
@@ -5301,6 +5364,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         trackSendToMenu = nullptr;
         settingsMenu = nullptr;
         helpMenu = nullptr;
+        languageMenu = nullptr;
         PostQuitMessage(0);
         return 0;
     }
@@ -5324,8 +5388,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     {
         ResetToDefaultAppState();
         MessageBoxW(nullptr,
-                    L"Saved application state could not be loaded.\n"
-                    L"A new session will be started.",
+                    T(UiText::StateLoadFailed),
                     WindowTitle, MB_OK | MB_ICONWARNING);
     }
     KeepSavedWindowPositionOnScreen();
@@ -5335,7 +5398,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     commonControls.dwICC = ICC_LISTVIEW_CLASSES | ICC_WIN95_CLASSES;
     if (!InitCommonControlsEx(&commonControls))
     {
-        MessageBoxW(nullptr, L"Common Controls の初期化に失敗しました。",
+        MessageBoxW(nullptr, T(UiText::CommonControlsFailed),
                     WindowTitle, MB_OK | MB_ICONERROR);
         return 1;
     }
@@ -5361,7 +5424,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
     if (!RegisterClassExW(&windowClass))
     {
-        MessageBoxW(nullptr, L"ウインドウクラスの登録に失敗しました。",
+        MessageBoxW(nullptr, T(UiText::WindowClassFailed),
                     WindowTitle, MB_OK | MB_ICONERROR);
         return 1;
     }
@@ -5372,9 +5435,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     organizerClass.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
     if (!RegisterClassExW(&organizerClass))
     {
-        MessageBoxW(nullptr,
-                    L"The Playlist Organizer window class could not be "
-                    L"registered.",
+        MessageBoxW(nullptr, T(UiText::WindowClassFailed),
                     WindowTitle, MB_OK | MB_ICONERROR);
         return 1;
     }
@@ -5385,9 +5446,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     sendToSettingsClass.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
     if (!RegisterClassExW(&sendToSettingsClass))
     {
-        MessageBoxW(nullptr,
-                    L"The Send To settings window class could not be "
-                    L"registered.",
+        MessageBoxW(nullptr, T(UiText::WindowClassFailed),
                     WindowTitle, MB_OK | MB_ICONERROR);
         return 1;
     }
@@ -5398,9 +5457,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     sendToEditorClass.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
     if (!RegisterClassExW(&sendToEditorClass))
     {
-        MessageBoxW(nullptr,
-                    L"The Send To editor window class could not be "
-                    L"registered.",
+        MessageBoxW(nullptr, T(UiText::WindowClassFailed),
                     WindowTitle, MB_OK | MB_ICONERROR);
         return 1;
     }
@@ -5411,8 +5468,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     trackColumnsClass.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
     if (!RegisterClassExW(&trackColumnsClass))
     {
-        MessageBoxW(nullptr,
-                    L"The Track Columns window class could not be registered.",
+        MessageBoxW(nullptr, T(UiText::WindowClassFailed),
                     WindowTitle, MB_OK | MB_ICONERROR);
         return 1;
     }
@@ -5423,8 +5479,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     extinfFormatClass.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
     if (!RegisterClassExW(&extinfFormatClass))
     {
-        MessageBoxW(nullptr,
-                    L"The EXTINF Format window class could not be registered.",
+        MessageBoxW(nullptr, T(UiText::WindowClassFailed),
                     WindowTitle, MB_OK | MB_ICONERROR);
         return 1;
     }
@@ -5437,8 +5492,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     customExtinfEditorClass.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
     if (!RegisterClassExW(&customExtinfEditorClass))
     {
-        MessageBoxW(nullptr,
-                    L"The Custom EXTINF editor class could not be registered.",
+        MessageBoxW(nullptr, T(UiText::WindowClassFailed),
                     WindowTitle, MB_OK | MB_ICONERROR);
         return 1;
     }
@@ -5451,7 +5505,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         nullptr, nullptr, instance, nullptr);
     if (window == nullptr)
     {
-        MessageBoxW(nullptr, L"メインウインドウの作成に失敗しました。",
+        MessageBoxW(nullptr, T(UiText::MainWindowFailed),
                     WindowTitle, MB_OK | MB_ICONERROR);
         return 1;
     }

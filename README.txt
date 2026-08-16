@@ -1,6 +1,8 @@
 Playlist Manager
 Version 1.0.0
 
+Japanese documentation: README_ja.txt
+
 OVERVIEW
 
 Playlist Manager is a Windows 11 application for managing music playlists
@@ -19,6 +21,11 @@ MAIN FEATURES
 - Track count and total duration display
 
 BASIC OPERATION
+
+Change the UI language
+  Use Settings > Language and choose English or Japanese. The selection is
+  saved immediately and takes effect the next time Playlist Manager starts.
+  The interface is not rebuilt while the application is running.
 
 Create a playlist
   Use Playlist > New Playlist. Playlist names can be renamed from the
@@ -88,3 +95,5 @@ LICENSE
 
 No application license is declared by this README. License information will
 be supplied separately when the project owner selects a distribution license.
+
+For the Japanese version of this document, see README_ja.txt.
