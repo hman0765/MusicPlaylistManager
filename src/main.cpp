@@ -4476,28 +4476,29 @@ LRESULT CALLBACK ExtinfFormatWindowProcedure(
     {
         const HINSTANCE instance =
             reinterpret_cast<LPCREATESTRUCTW>(lParam)->hInstance;
+        constexpr int PresetControlWidth = 500;
         CreateWindowExW(0, WC_STATICW, T(UiText::Preset),
                         WS_CHILD | WS_VISIBLE,
                         16, 16, 90, 22, window, nullptr, instance, nullptr);
         CreateWindowExW(0, WC_BUTTONW, T(UiText::ArtistTitlePreset),
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON |
                             WS_GROUP,
-                        30, 43, 220, 24, window,
+                        30, 43, PresetControlWidth, 24, window,
                         reinterpret_cast<HMENU>(ExtinfArtistTitleRadioId),
                         instance, nullptr);
         CreateWindowExW(0, WC_BUTTONW, T(UiText::TitlePreset),
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
-                        30, 70, 220, 24, window,
+                        30, 70, PresetControlWidth, 24, window,
                         reinterpret_cast<HMENU>(ExtinfTitleRadioId), instance,
                         nullptr);
         CreateWindowExW(0, WC_BUTTONW, T(UiText::ArtistTitleAlbumPreset),
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
-                        30, 97, 220, 24, window,
+                        30, 97, PresetControlWidth, 24, window,
                         reinterpret_cast<HMENU>(ExtinfArtistTitleAlbumRadioId),
                         instance, nullptr);
         CreateWindowExW(0, WC_BUTTONW, T(UiText::Custom),
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
-                        30, 124, 220, 24, window,
+                        30, 124, PresetControlWidth, 24, window,
                         reinterpret_cast<HMENU>(ExtinfCustomRadioId), instance,
                         nullptr);
         const std::wstring customLabel =
