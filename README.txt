@@ -60,7 +60,10 @@ Export an M3U8 playlist
 Get Metadata
   Select one or more tracks and use Track > Get Metadata. Only metadata for
   currently visible track columns is retrieved. This reads information from
-  the audio files; it does not write or change audio file tags.
+  the audio files; it does not write or change audio file tags. A modal
+  progress window shows the number of completed and selected tracks, then
+  closes automatically when processing finishes. Missing or unreadable files
+  are counted as processed so the remaining tracks can continue.
 
 Organize playlists
   Use Playlist > Organize Playlists to create groups, move playlists between
