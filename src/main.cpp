@@ -4,11 +4,13 @@
 #include <commctrl.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <process.h>
 
 #include <algorithm>
 #include <array>
 #include <cwchar>
 #include <cwctype>
+#include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <iomanip>
@@ -40,6 +42,8 @@ constexpr wchar_t ExtinfFormatWindowClassName[] =
     L"MusicPlaylistManagerExtinfFormatWindow";
 constexpr wchar_t CustomExtinfEditorWindowClassName[] =
     L"MusicPlaylistManagerCustomExtinfEditorWindow";
+constexpr wchar_t MetadataProgressWindowClassName[] =
+    L"MusicPlaylistManagerMetadataProgressWindow";
 constexpr wchar_t WindowTitle[] = L"Music Playlist Manager";
 constexpr wchar_t OnlineManualUrl[] =
     L"https://app2026kak.netlify.app/playlist-manager/manual";
@@ -71,6 +75,8 @@ constexpr UINT MaximumWindowsCommandLineLength = 32767;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
 constexpr UINT MessagePreparePlaylistLabelEdit = WM_APP + 2;
 constexpr UINT MessageTogglePlaylistGroup = WM_APP + 3;
+constexpr UINT MessageMetadataProgress = WM_APP + 4;
+constexpr UINT MessageMetadataComplete = WM_APP + 5;
 constexpr UINT_PTR AppStateTimerId = 1;
 constexpr UINT AppStateTimerIntervalMs = 60'000;
 constexpr int OrganizerGroupListId = 2001;
@@ -117,6 +123,8 @@ constexpr int ExtinfCloseButtonId = 5008;
 constexpr int CustomExtinfEditId = 5101;
 constexpr int CustomExtinfOkId = 5102;
 constexpr int CustomExtinfCancelId = 5103;
+constexpr int MetadataProgressLabelId = 6001;
+constexpr int MetadataProgressCountId = 6002;
 
 HWND mainWindow = nullptr;
 HWND playlistListView = nullptr;
@@ -166,6 +174,8 @@ HWND extinfEditButton = nullptr;
 HWND extinfPreviewText = nullptr;
 HWND customExtinfEditorWindow = nullptr;
 HWND customExtinfEdit = nullptr;
+HWND metadataProgressWindow = nullptr;
+HWND metadataProgressCount = nullptr;
 HFONT statusFont = nullptr;
 int statusHeight = 32;
 int splitterX = 240;
@@ -267,6 +277,8 @@ LRESULT CALLBACK TrackColumnsWindowProcedure(
 LRESULT CALLBACK ExtinfFormatWindowProcedure(
     HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK CustomExtinfEditorWindowProcedure(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK MetadataProgressWindowProcedure(
     HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
 void MarkAppStateDirty()
@@ -1925,8 +1937,113 @@ void DeleteSelectedTracks()
     }
 }
 
-void GetMetadataForSelectedTracks()
+struct MetadataJob
 {
+    HWND progressWindow = nullptr;
+    int playlistIndex = -1;
+    std::vector<int> trackIndices;
+    std::vector<Track> tracks;
+    std::vector<bool> updatedTracks;
+    MetadataRequest request{};
+};
+
+void SetMetadataProgressText(int completed, int total)
+{
+    if (metadataProgressCount == nullptr)
+        return;
+    const std::wstring text = std::to_wstring(completed) + L" / " +
+        std::to_wstring(total);
+    SetWindowTextW(metadataProgressCount, text.c_str());
+    UpdateWindow(metadataProgressCount);
+}
+
+unsigned __stdcall MetadataWorkerThread(void* parameter)
+{
+    MetadataJob& job = *static_cast<MetadataJob*>(parameter);
+    const int total = static_cast<int>(job.tracks.size());
+    for (int position = 0; position < total; ++position)
+    {
+        bool updated = false;
+        try
+        {
+            updated = UpdateTrackMetadata(
+                job.tracks[static_cast<std::size_t>(position)], job.request);
+        }
+        catch (const std::exception&)
+        {
+            updated = false;
+        }
+        catch (...)
+        {
+            updated = false;
+        }
+        job.updatedTracks[static_cast<std::size_t>(position)] = updated;
+        PostMessageW(job.progressWindow, MessageMetadataProgress,
+                     static_cast<WPARAM>(position + 1),
+                     static_cast<LPARAM>(total));
+    }
+    PostMessageW(job.progressWindow, MessageMetadataComplete,
+                 static_cast<WPARAM>(total), static_cast<LPARAM>(total));
+    return 0;
+}
+
+LRESULT CALLBACK MetadataProgressWindowProcedure(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_CREATE:
+    {
+        const HINSTANCE instance = reinterpret_cast<LPCREATESTRUCTW>(
+            lParam)->hInstance;
+        const HWND label = CreateWindowExW(
+            0, WC_STATICW, T(UiText::GettingMetadata),
+            WS_CHILD | WS_VISIBLE | SS_CENTER,
+            18, 20, 264, 24, window,
+            reinterpret_cast<HMENU>(MetadataProgressLabelId), instance,
+            nullptr);
+        metadataProgressCount = CreateWindowExW(
+            0, WC_STATICW, L"0 / 0",
+            WS_CHILD | WS_VISIBLE | SS_CENTER,
+            18, 62, 264, 28, window,
+            reinterpret_cast<HMENU>(MetadataProgressCountId), instance,
+            nullptr);
+        if (label == nullptr || metadataProgressCount == nullptr)
+            return -1;
+        const HFONT font = static_cast<HFONT>(
+            GetStockObject(DEFAULT_GUI_FONT));
+        SendMessageW(label, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SendMessageW(metadataProgressCount, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(font), TRUE);
+        return 0;
+    }
+    case MessageMetadataProgress:
+        SetMetadataProgressText(static_cast<int>(wParam),
+                                static_cast<int>(lParam));
+        return 0;
+    case MessageMetadataComplete:
+        SetMetadataProgressText(static_cast<int>(wParam),
+                                static_cast<int>(lParam));
+        DestroyWindow(window);
+        return 0;
+    case WM_SYSCOMMAND:
+        if ((wParam & 0xFFF0) == SC_CLOSE)
+            return 0;
+        break;
+    case WM_CLOSE:
+        return 0;
+    case WM_DESTROY:
+        metadataProgressWindow = nullptr;
+        metadataProgressCount = nullptr;
+        return 0;
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+void GetMetadataForSelectedTracks(HWND owner)
+{
+    if (metadataProgressWindow != nullptr)
+        return;
     Playlist* playlist = GetSelectedPlaylist();
     const std::vector<int> selectedIndices =
         GetSelectedTrackIndices(trackListView);
@@ -1952,25 +2069,118 @@ void GetMetadataForSelectedTracks()
     request.fileSize = IsTrackColumnVisible(TrackColumnId::FileSize);
     request.dateModified = IsTrackColumnVisible(TrackColumnId::DateModified);
 
-    bool updatedAnyTrack = false;
-    for (const int index : selectedIndices)
+    MetadataJob job{};
+    job.playlistIndex = selectedPlaylistIndex;
+    job.trackIndices = selectedIndices;
+    job.request = request;
+    try
     {
-        if (index >= 0 && index < static_cast<int>(playlist->tracks.size()))
+        job.tracks.reserve(selectedIndices.size());
+        for (const int index : selectedIndices)
         {
-            updatedAnyTrack =
-                UpdateTrackMetadata(
-                    playlist->tracks[static_cast<std::size_t>(index)],
-                    request) ||
-                updatedAnyTrack;
+            job.tracks.push_back(
+                index >= 0 && index < static_cast<int>(playlist->tracks.size())
+                    ? playlist->tracks[static_cast<std::size_t>(index)]
+                    : Track{});
         }
+        job.updatedTracks.resize(job.tracks.size(), false);
     }
-    if (updatedAnyTrack)
+    catch (const std::exception&)
     {
-        playlist->isModified = true;
-        MarkAppStateDirty();
+        MessageBoxW(owner, T(UiText::MetadataWorkerStartFailed), WindowTitle,
+                    MB_OK | MB_ICONERROR);
+        return;
+    }
+
+    RECT ownerRect{};
+    GetWindowRect(owner, &ownerRect);
+    constexpr int width = 300;
+    constexpr int height = 145;
+    metadataProgressWindow = CreateWindowExW(
+        WS_EX_DLGMODALFRAME, MetadataProgressWindowClassName,
+        T(UiText::GetMetadata), WS_POPUP | WS_CAPTION,
+        ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2,
+        ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2,
+        width, height, owner, nullptr,
+        reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(owner, GWLP_HINSTANCE)),
+        nullptr);
+    if (metadataProgressWindow == nullptr)
+    {
+        MessageBoxW(owner, T(UiText::MetadataWorkerStartFailed), WindowTitle,
+                    MB_OK | MB_ICONERROR);
+        return;
+    }
+
+    const HWND progressWindow = metadataProgressWindow;
+    job.progressWindow = progressWindow;
+    SetMetadataProgressText(0, static_cast<int>(job.tracks.size()));
+    EnableWindow(owner, FALSE);
+    ShowWindow(progressWindow, SW_SHOW);
+    UpdateWindow(progressWindow);
+
+    const std::uintptr_t workerThreadValue = _beginthreadex(
+        nullptr, 0, MetadataWorkerThread, &job, 0, nullptr);
+    if (workerThreadValue == 0)
+    {
+        DestroyWindow(progressWindow);
+        EnableWindow(owner, TRUE);
+        SetForegroundWindow(owner);
+        MessageBoxW(owner, T(UiText::MetadataWorkerStartFailed), WindowTitle,
+                    MB_OK | MB_ICONERROR);
+        return;
+    }
+    const HANDLE workerThread = reinterpret_cast<HANDLE>(workerThreadValue);
+
+    bool receivedQuitMessage = false;
+    MSG message{};
+    while (IsWindow(progressWindow))
+    {
+        const BOOL result = GetMessageW(&message, nullptr, 0, 0);
+        if (result <= 0)
+        {
+            receivedQuitMessage = result == 0;
+            break;
+        }
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+
+    WaitForSingleObject(workerThread, INFINITE);
+    CloseHandle(workerThread);
+    if (IsWindow(progressWindow))
+        DestroyWindow(progressWindow);
+
+    bool updatedAnyTrack = false;
+    if (job.playlistIndex >= 0 &&
+        job.playlistIndex < static_cast<int>(playlists.size()))
+    {
+        Playlist& destination = playlists[
+            static_cast<std::size_t>(job.playlistIndex)];
+        for (std::size_t position = 0;
+             position < job.trackIndices.size(); ++position)
+        {
+            const int index = job.trackIndices[position];
+            if (job.updatedTracks[position] && index >= 0 &&
+                index < static_cast<int>(destination.tracks.size()))
+            {
+                destination.tracks[static_cast<std::size_t>(index)] =
+                    std::move(job.tracks[position]);
+                updatedAnyTrack = true;
+            }
+        }
+        if (updatedAnyTrack)
+        {
+            destination.isModified = true;
+            MarkAppStateDirty();
+        }
     }
     RefreshSelectedTrackList();
     RestoreTrackSelection(selectedIndices);
+    EnableWindow(owner, TRUE);
+    SetForegroundWindow(owner);
+    SetFocus(trackListView);
+    if (receivedQuitMessage)
+        PostQuitMessage(0);
 }
 
 bool HasVisibleName(const std::wstring& name)
@@ -4996,7 +5206,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             ExportSelectedPlaylist(window);
             return 0;
         case CommandGetTrackMetadata:
-            GetMetadataForSelectedTracks();
+            GetMetadataForSelectedTracks(window);
             return 0;
         case CommandDeleteTracks:
             DeleteSelectedTracks();
@@ -5518,6 +5728,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         CustomExtinfEditorWindowClassName;
     customExtinfEditorClass.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
     if (!RegisterClassExW(&customExtinfEditorClass))
+    {
+        MessageBoxW(nullptr, T(UiText::WindowClassFailed),
+                    WindowTitle, MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
+    WNDCLASSEXW metadataProgressClass = windowClass;
+    metadataProgressClass.lpfnWndProc = MetadataProgressWindowProcedure;
+    metadataProgressClass.lpszClassName = MetadataProgressWindowClassName;
+    metadataProgressClass.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
+    if (!RegisterClassExW(&metadataProgressClass))
     {
         MessageBoxW(nullptr, T(UiText::WindowClassFailed),
                     WindowTitle, MB_OK | MB_ICONERROR);

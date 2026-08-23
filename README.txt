@@ -1,5 +1,5 @@
 Playlist Manager
-Version 1.01
+Version 1.02
 
 Japanese documentation: README_ja.txt
 
@@ -27,6 +27,7 @@ MAIN FEATURES
 - M3U8 playlist export
 - Audio file drag and drop from Windows Explorer
 - Metadata retrieval using TagLib
+- Metadata retrieval progress display
 - Customizable track columns
 - Preset and custom EXTINF formatting
 - Send selected tracks or their folder to external applications
@@ -96,7 +97,7 @@ Deleting a playlist or removing a track from Playlist Manager does not delete
 the actual audio file from disk. Playlist Manager changes only its internal
 playlist data and exported playlist files.
 
-Get Metadata reads tags and audio properties. Version 1.01 does not edit or
+Get Metadata reads tags and audio properties. Version 1.02 does not edit or
 write tags to audio files.
 
 SYSTEM REQUIREMENTS

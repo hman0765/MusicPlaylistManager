@@ -1,5 +1,5 @@
 Playlist Manager
-Version 1.01
+Version 1.02
 
 English documentation: README.txt
 
@@ -28,6 +28,7 @@ https://github.com/hman0765/MusicPlaylistManager
 - M3U8プレイリストのエクスポート
 - Windows Explorerからの音声ファイルのドラッグ＆ドロップ
 - TagLibによるメタデータ取得
+- メタデータ取得中の進捗表示
 - トラックカラムの表示項目と順序のカスタマイズ
 - プリセットまたはカスタム形式によるEXTINF生成
 - 選択トラックまたはそのフォルダを外部アプリへ送る機能
@@ -104,7 +105,7 @@ Playlist Managerでプレイリストを削除したり、プレイリストか�
 プレイリストファイルだけです。
 
 Get Metadata（メタデータを取得）はタグと音声プロパティを読み取ります。
-Version 1.01では、音声ファイルのタグを編集または書き込みません。
+Version 1.02では、音声ファイルのタグを編集または書き込みません。
 
 動作環境
 
