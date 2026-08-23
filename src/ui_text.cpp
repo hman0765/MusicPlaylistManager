@@ -31,6 +31,7 @@ Translations{{
     {L"Delete", L"削除"},
     {L"Send To Applications...", L"アプリに送る..."},
     {L"Columns...", L"カラム..."}, {L"EXTINF Format...", L"EXTINF形式..."},
+    {L"Online Manual...", L"オンラインマニュアル..."},
     {L"About Playlist Manager...", L"Playlist Managerについて..."},
     {L"Playlist", L"プレイリスト"}, {L"Track Columns", L"トラックカラム"},
     {L"Title", L"タイトル"}, {L"Artist", L"アーティスト"},
@@ -125,7 +126,9 @@ Translations{{
      L"アプリケーション (*.exe)\0*.exe\0すべてのファイル (*.*)\0*.*\0\0"},
     {L"Select Application", L"アプリケーションを選択"},
     {L"The EXTINF format is invalid.", L"EXTINF形式が正しくありません。"},
-    {L"Windows error ", L"Windowsエラー "}
+    {L"Windows error ", L"Windowsエラー "},
+    {L"Unable to open the online manual.",
+     L"オンラインマニュアルを開けませんでした。"}
 }};
 }
 

@@ -9,6 +9,17 @@ Playlist Manager is a Windows 11 application for managing music playlists
 and exporting M3U8 playlists. It uses a native Windows interface and keeps
 playlist data separate from the audio files on disk.
 
+LINKS
+
+Official Website:
+https://app2026kak.netlify.app/playlist-manager/
+
+Online Manual:
+https://app2026kak.netlify.app/playlist-manager/manual
+
+Source Code:
+https://github.com/hman0765/MusicPlaylistManager
+
 MAIN FEATURES
 
 - Playlist and playlist group management
@@ -93,7 +104,7 @@ SYSTEM REQUIREMENTS
 
 LICENSE
 
-No application license is declared by this README. License information will
-be supplied separately when the project owner selects a distribution license.
+This project is licensed under the MIT License.
+See LICENSE for details.
 
 For the Japanese version of this document, see README_ja.txt.

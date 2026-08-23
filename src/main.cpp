@@ -41,6 +41,8 @@ constexpr wchar_t ExtinfFormatWindowClassName[] =
 constexpr wchar_t CustomExtinfEditorWindowClassName[] =
     L"MusicPlaylistManagerCustomExtinfEditorWindow";
 constexpr wchar_t WindowTitle[] = L"Music Playlist Manager";
+constexpr wchar_t OnlineManualUrl[] =
+    L"https://app2026kak.netlify.app/playlist-manager/manual";
 constexpr int SplitterWidth = 6;
 constexpr int MinimumPaneWidth = 120;
 constexpr int MinimumWindowWidth = 360;
@@ -63,6 +65,7 @@ constexpr UINT CommandExtinfFormat = 1015;
 constexpr UINT CommandAbout = 1016;
 constexpr UINT CommandLanguageEnglish = 1017;
 constexpr UINT CommandLanguageJapanese = 1018;
+constexpr UINT CommandOnlineManual = 1019;
 constexpr UINT SendToApplicationCommandBase = 12000;
 constexpr UINT MaximumWindowsCommandLineLength = 32767;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
@@ -200,6 +203,17 @@ bool appStateTrackingEnabled = false;
 const wchar_t* T(UiText id)
 {
     return GetUiText(id, activeLanguage);
+}
+
+void OpenOnlineManual(HWND owner)
+{
+    const HINSTANCE result = ShellExecuteW(
+        owner, L"open", OnlineManualUrl, nullptr, nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) <= 32)
+    {
+        MessageBoxW(owner, T(UiText::OnlineManualOpenFailed), WindowTitle,
+                    MB_OK | MB_ICONERROR);
+    }
 }
 
 enum class PlaylistListRowType
@@ -1272,6 +1286,8 @@ bool CreateMainMenuBar(HWND window)
     AppendMenuW(settingsMenu, MF_STRING, CommandExtinfFormat,
                 T(UiText::ExtinfFormat));
 
+    AppendMenuW(helpMenu, MF_STRING, CommandOnlineManual,
+                T(UiText::OnlineManual));
     AppendMenuW(helpMenu, MF_STRING, CommandAbout,
                 T(UiText::AboutPlaylistManager));
 
@@ -4925,6 +4941,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
             return 0;
         case CommandExtinfFormat:
             ShowExtinfFormatSettings(window);
+            return 0;
+        case CommandOnlineManual:
+            OpenOnlineManual(window);
             return 0;
         case CommandAbout:
         {

@@ -10,6 +10,17 @@ Playlist Managerは、音楽プレイリストの管理とM3U8プレイリスト
 ネイティブUIを使用し、プレイリストのデータとディスク上の音声ファイルを
 分離して管理します。
 
+リンク
+
+公式サイト:
+https://app2026kak.netlify.app/playlist-manager/
+
+オンラインマニュアル:
+https://app2026kak.netlify.app/playlist-manager/manual
+
+ソースコード:
+https://github.com/hman0765/MusicPlaylistManager
+
 主な機能
 
 - プレイリストとプレイリストグループの管理
@@ -99,7 +110,7 @@ Version 1.0.0では、音声ファイルのタグを編集または書き込み�
 
 ライセンス
 
-このREADMEではアプリケーションのライセンスを宣言しません。配布ライセンスは、
-プロジェクト所有者が選択した後に別途提示されます。
+このプロジェクトはMIT Licenseのもとで公開されています。
+詳細はLICENSEをご覧ください。
 
 この文書の英語版はREADME.txtを参照してください。

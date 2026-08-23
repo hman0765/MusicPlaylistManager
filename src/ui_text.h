@@ -15,7 +15,8 @@ enum class UiText
     OpenAudioFiles, ImportPlaylist, ExportM3U8, Exit,
     NewPlaylist, RenamePlaylist, DeletePlaylist, OrganizePlaylists,
     GetMetadata, OpenInExplorer, Properties, SendTo, Delete,
-    SendToApplications, Columns, ExtinfFormat, AboutPlaylistManager,
+    SendToApplications, Columns, ExtinfFormat, OnlineManual,
+    AboutPlaylistManager,
     PlaylistHeader, TrackColumnsTitle,
     TitleColumn, ArtistColumn, AlbumColumn, DurationColumn, CommentColumn,
     PathColumn, TrackNumberColumn, YearColumn, GenreColumn, AlbumArtistColumn,
@@ -49,7 +50,7 @@ enum class UiText
     NewGroupReserved, LoadNewPlaylistPrompt, LoadPlaylistPrompt,
     LoadPlaylistOptions, LoadM3U8Failed, RemoveSendToPrefix,
     RemoveSendToSuffix, ApplicationsFilter, SelectExecutableTitle,
-    InvalidExtinfFormat, WindowsErrorPrefix,
+    InvalidExtinfFormat, WindowsErrorPrefix, OnlineManualOpenFailed,
     Count
 };
 
