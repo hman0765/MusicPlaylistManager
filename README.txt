@@ -1,5 +1,5 @@
 Playlist Manager
-Version 1.0.0
+Version 1.01
 
 Japanese documentation: README_ja.txt
 
@@ -23,7 +23,8 @@ https://github.com/hman0765/MusicPlaylistManager
 MAIN FEATURES
 
 - Playlist and playlist group management
-- M3U8 playlist import and export
+- M3U8 and M3U playlist import
+- M3U8 playlist export
 - Audio file drag and drop from Windows Explorer
 - Metadata retrieval using TagLib
 - Customizable track columns
@@ -46,8 +47,10 @@ Add audio files
   Drag supported audio files from Windows Explorer onto the Track pane, or
   use File > Open Audio Files.
 
-Import an M3U8 playlist
-  Use File > Import Playlist, or drop an M3U8 file onto the application.
+Import an M3U8 or M3U playlist
+  Use File > Import Playlist, or drop an M3U8 or M3U file onto the
+  application. M3U files support UTF-8 and CP932 text. Percent-encoded UTF-8
+  paths produced by some players are decoded when possible.
 
 Export an M3U8 playlist
   Select a playlist and use File > Export M3U8. EXTINF text formatting can
@@ -93,7 +96,7 @@ Deleting a playlist or removing a track from Playlist Manager does not delete
 the actual audio file from disk. Playlist Manager changes only its internal
 playlist data and exported playlist files.
 
-Get Metadata reads tags and audio properties. Version 1.0.0 does not edit or
+Get Metadata reads tags and audio properties. Version 1.01 does not edit or
 write tags to audio files.
 
 SYSTEM REQUIREMENTS

@@ -142,22 +142,82 @@ std::wstring DecodeUtf8(std::string bytes)
     return text;
 }
 
-std::wstring ReadM3U8Text(const std::wstring& filePath)
+bool HasUtf8Bom(const std::string& bytes)
+{
+    return bytes.size() >= 3 &&
+        static_cast<unsigned char>(bytes[0]) == 0xEF &&
+        static_cast<unsigned char>(bytes[1]) == 0xBB &&
+        static_cast<unsigned char>(bytes[2]) == 0xBF;
+}
+
+std::wstring DecodeCodePage(const std::string& bytes, UINT codePage)
+{
+    if (bytes.empty())
+    {
+        return L"";
+    }
+    if (bytes.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+    {
+        throw std::runtime_error("The playlist file is too large.");
+    }
+
+    const int byteCount = static_cast<int>(bytes.size());
+    const int characterCount = MultiByteToWideChar(
+        codePage, MB_ERR_INVALID_CHARS, bytes.data(), byteCount, nullptr, 0);
+    if (characterCount <= 0)
+    {
+        throw std::runtime_error("The playlist encoding is invalid.");
+    }
+
+    std::wstring text(static_cast<std::size_t>(characterCount), L'\0');
+    if (MultiByteToWideChar(codePage, MB_ERR_INVALID_CHARS,
+                            bytes.data(), byteCount,
+                            text.data(), characterCount) != characterCount)
+    {
+        throw std::runtime_error("Failed to decode the playlist file.");
+    }
+    return text;
+}
+
+std::string ReadPlaylistBytes(const std::wstring& filePath)
 {
     std::ifstream file(std::filesystem::path(filePath),
                        std::ios::binary);
     if (!file)
     {
-        throw std::runtime_error("Failed to open the m3u8 file.");
+        throw std::runtime_error("Failed to open the playlist file.");
     }
 
     std::string bytes((std::istreambuf_iterator<char>(file)),
                       std::istreambuf_iterator<char>());
     if (file.bad())
     {
-        throw std::runtime_error("Failed to read the m3u8 file.");
+        throw std::runtime_error("Failed to read the playlist file.");
     }
-    return DecodeUtf8(std::move(bytes));
+    return bytes;
+}
+
+std::wstring ReadPlaylistText(const std::wstring& filePath)
+{
+    std::string bytes = ReadPlaylistBytes(filePath);
+    const std::wstring extension = LowercaseExtension(filePath);
+    if (extension == L".m3u8" || HasUtf8Bom(bytes))
+    {
+        return DecodeUtf8(std::move(bytes));
+    }
+    if (extension != L".m3u")
+    {
+        throw std::runtime_error("The playlist file type is not supported.");
+    }
+
+    try
+    {
+        return DecodeUtf8(bytes);
+    }
+    catch (const std::exception&)
+    {
+        return DecodeCodePage(bytes, 932);
+    }
 }
 
 std::wstring TrimWhitespace(const std::wstring& text)
@@ -228,6 +288,163 @@ std::string EncodeUtf8(const std::wstring& text)
     }
     return bytes;
 }
+
+int HexDigitValue(wchar_t character)
+{
+    if (character >= L'0' && character <= L'9')
+        return character - L'0';
+    if (character >= L'a' && character <= L'f')
+        return character - L'a' + 10;
+    if (character >= L'A' && character <= L'F')
+        return character - L'A' + 10;
+    return -1;
+}
+
+std::wstring PercentDecodeUtf8Path(const std::wstring& path)
+{
+    if (path.find(L'%') == std::wstring::npos)
+    {
+        return path;
+    }
+
+    try
+    {
+        std::string bytes;
+        bool decodedSequence = false;
+        std::size_t position = 0;
+        while (position < path.size())
+        {
+            if (path[position] == L'%')
+            {
+                if (position + 2 >= path.size())
+                    return path;
+                const int high = HexDigitValue(path[position + 1]);
+                const int low = HexDigitValue(path[position + 2]);
+                if (high < 0 || low < 0)
+                    return path;
+                bytes.push_back(static_cast<char>((high << 4) | low));
+                decodedSequence = true;
+                position += 3;
+                continue;
+            }
+
+            const std::size_t percent = path.find(L'%', position);
+            const std::size_t length = percent == std::wstring::npos
+                ? path.size() - position : percent - position;
+            bytes += EncodeUtf8(path.substr(position, length));
+            position += length;
+        }
+
+        if (!decodedSequence)
+            return path;
+        std::wstring decoded = DecodeUtf8(std::move(bytes));
+        return decoded.find(L'\0') == std::wstring::npos ? decoded : path;
+    }
+    catch (const std::exception&)
+    {
+        return path;
+    }
+}
+
+bool StartsWithAsciiCaseInsensitive(const std::wstring& text,
+                                    const wchar_t* prefix)
+{
+    const std::size_t prefixLength = std::wcslen(prefix);
+    if (text.size() < prefixLength)
+        return false;
+    for (std::size_t index = 0; index < prefixLength; ++index)
+    {
+        if (std::towlower(text[index]) != std::towlower(prefix[index]))
+            return false;
+    }
+    return true;
+}
+
+std::wstring NormalizeImportedPath(const std::wstring& path)
+{
+    std::wstring normalized = PercentDecodeUtf8Path(path);
+    if (StartsWithAsciiCaseInsensitive(normalized, L"file:///"))
+    {
+        normalized.erase(0, 8);
+        std::replace(normalized.begin(), normalized.end(), L'/', L'\\');
+    }
+    else if (StartsWithAsciiCaseInsensitive(normalized, L"file://"))
+    {
+        normalized = L"\\\\" + normalized.substr(7);
+        std::replace(normalized.begin(), normalized.end(), L'/', L'\\');
+    }
+    return normalized;
+}
+
+std::wstring NormalizePlaylistLineEndings(const std::wstring& text)
+{
+    std::wstring normalized;
+    normalized.reserve(text.size());
+    for (std::size_t index = 0; index < text.size(); ++index)
+    {
+        if (text[index] != L'\r')
+        {
+            normalized.push_back(text[index]);
+            continue;
+        }
+        normalized.push_back(L'\n');
+        if (index + 1 < text.size() && text[index + 1] == L'\n')
+        {
+            ++index;
+        }
+    }
+    return normalized;
+}
+
+Playlist ParsePlaylistText(const std::wstring& contents,
+                           const std::filesystem::path& playlistPath)
+{
+    Playlist playlist{};
+    playlist.name = playlistPath.stem().wstring();
+    playlist.filePath = playlistPath.wstring();
+
+    std::wistringstream lines(NormalizePlaylistLineEndings(contents));
+    std::wstring line;
+    std::wstring pendingExtinfText;
+    int pendingExtinfDuration = -1;
+
+    while (std::getline(lines, line))
+    {
+        if (line.empty())
+            continue;
+
+        constexpr wchar_t ExtinfPrefix[] = L"#EXTINF:";
+        if (line.rfind(ExtinfPrefix, 0) == 0)
+        {
+            const std::wstring value = line.substr(std::size(ExtinfPrefix) - 1);
+            const auto comma = value.find(L',');
+            pendingExtinfDuration = ParseExtinfDuration(value.substr(0, comma));
+            pendingExtinfText = comma == std::wstring::npos
+                ? L"" : value.substr(comma + 1);
+            continue;
+        }
+        if (line.front() == L'#')
+            continue;
+
+        std::filesystem::path trackPath(NormalizeImportedPath(line));
+        if (trackPath.is_relative())
+        {
+            trackPath = playlistPath.parent_path() / trackPath;
+        }
+
+        Track track{};
+        track.path = trackPath.lexically_normal().wstring();
+        track.extinfText = pendingExtinfText;
+        track.extinfDuration = pendingExtinfDuration;
+        playlist.tracks.push_back(std::move(track));
+
+        pendingExtinfText.clear();
+        pendingExtinfDuration = -1;
+    }
+
+    playlist.isModified = false;
+    return playlist;
+}
 }
 
 bool IsSupportedAudioPath(const std::wstring& path)
@@ -247,6 +464,16 @@ bool IsSupportedAudioPath(const std::wstring& path)
 bool IsM3U8Path(const std::wstring& path)
 {
     return LowercaseExtension(path) == L".m3u8";
+}
+
+bool IsM3UPath(const std::wstring& path)
+{
+    return LowercaseExtension(path) == L".m3u";
+}
+
+bool IsPlaylistPath(const std::wstring& path)
+{
+    return IsM3U8Path(path) || IsM3UPath(path);
 }
 
 Track CreateTrackFromFile(const std::wstring& path)
@@ -406,63 +633,13 @@ bool UpdateTrackMetadata(Track& track, const MetadataRequest& request)
 
 Playlist LoadM3U8(const std::wstring& filePath)
 {
+    return LoadPlaylist(filePath);
+}
+
+Playlist LoadPlaylist(const std::wstring& filePath)
+{
     const std::filesystem::path playlistPath(filePath);
-    Playlist playlist{};
-    playlist.name = playlistPath.stem().wstring();
-    playlist.filePath = filePath;
-
-    const std::wstring contents = ReadM3U8Text(filePath);
-    std::wistringstream lines(contents);
-    std::wstring line;
-    std::wstring pendingExtinfText;
-    int pendingExtinfDuration = -1;
-
-    while (std::getline(lines, line))
-    {
-        if (!line.empty() && line.back() == L'\r')
-        {
-            line.pop_back();
-        }
-        if (line.empty())
-        {
-            continue;
-        }
-
-        constexpr wchar_t ExtinfPrefix[] = L"#EXTINF:";
-        if (line.rfind(ExtinfPrefix, 0) == 0)
-        {
-            const std::wstring value = line.substr(std::size(ExtinfPrefix) - 1);
-            const auto comma = value.find(L',');
-            const std::wstring durationText = value.substr(0, comma);
-            pendingExtinfDuration = ParseExtinfDuration(durationText);
-            pendingExtinfText = comma == std::wstring::npos
-                ? L""
-                : value.substr(comma + 1);
-            continue;
-        }
-        if (line.front() == L'#')
-        {
-            continue;
-        }
-
-        std::filesystem::path trackPath(line);
-        if (trackPath.is_relative())
-        {
-            trackPath = playlistPath.parent_path() / trackPath;
-        }
-
-        Track track{};
-        track.path = trackPath.lexically_normal().wstring();
-        track.extinfText = pendingExtinfText;
-        track.extinfDuration = pendingExtinfDuration;
-        playlist.tracks.push_back(std::move(track));
-
-        pendingExtinfText.clear();
-        pendingExtinfDuration = -1;
-    }
-
-    playlist.isModified = false;
-    return playlist;
+    return ParsePlaylistText(ReadPlaylistText(filePath), playlistPath);
 }
 
 namespace

@@ -125,10 +125,13 @@ struct Playlist
 
 bool IsSupportedAudioPath(const std::wstring& path);
 bool IsM3U8Path(const std::wstring& path);
+bool IsM3UPath(const std::wstring& path);
+bool IsPlaylistPath(const std::wstring& path);
 Track CreateTrackFromFile(const std::wstring& path);
 bool UpdateTrackMetadata(Track& track);
 bool UpdateTrackMetadata(Track& track, const MetadataRequest& request);
 Playlist LoadM3U8(const std::wstring& filePath);
+Playlist LoadPlaylist(const std::wstring& filePath);
 void SaveM3U8(const Playlist& playlist, const std::wstring& filePath);
 void SaveM3U8(const Playlist& playlist, const std::wstring& filePath,
               ExtinfFormatPreset preset,

@@ -2114,9 +2114,15 @@ void ExportSelectedPlaylist(HWND window)
 
     constexpr DWORD MaximumPathLength = 32768;
     std::vector<wchar_t> filePathBuffer(MaximumPathLength, L'\0');
-    const std::wstring initialPath = playlist->filePath.empty()
+    std::wstring initialPath = playlist->filePath.empty()
         ? MakeSafeExportFileName(playlist->name)
         : playlist->filePath;
+    if (!IsM3U8Path(initialPath))
+    {
+        std::filesystem::path exportPath(initialPath);
+        exportPath.replace_extension(L".m3u8");
+        initialPath = exportPath.wstring();
+    }
     const std::size_t copyLength =
         std::min(initialPath.size(), filePathBuffer.size() - 1);
     std::copy_n(initialPath.data(), copyLength, filePathBuffer.data());
@@ -2433,14 +2439,15 @@ bool IsPointInTrackPane(HWND window, POINT point)
     return PtInRect(&trackRect, point) != FALSE;
 }
 
-enum class M3U8LoadMode
+enum class PlaylistLoadMode
 {
     Cancel,
     NewPlaylist,
     AppendToCurrent
 };
 
-M3U8LoadMode ChooseM3U8LoadMode(HWND window, const std::wstring& filePath)
+PlaylistLoadMode ChoosePlaylistLoadMode(HWND window,
+                                        const std::wstring& filePath)
 {
     if (GetSelectedPlaylist() == nullptr)
     {
@@ -2448,8 +2455,8 @@ M3U8LoadMode ChooseM3U8LoadMode(HWND window, const std::wstring& filePath)
             T(UiText::LoadNewPlaylistPrompt) + filePath;
         return MessageBoxW(window, message.c_str(), WindowTitle,
                            MB_OKCANCEL | MB_ICONQUESTION) == IDOK
-            ? M3U8LoadMode::NewPlaylist
-            : M3U8LoadMode::Cancel;
+            ? PlaylistLoadMode::NewPlaylist
+            : PlaylistLoadMode::Cancel;
     }
 
     const std::wstring message =
@@ -2459,18 +2466,18 @@ M3U8LoadMode ChooseM3U8LoadMode(HWND window, const std::wstring& filePath)
                         MB_YESNOCANCEL | MB_ICONQUESTION))
     {
     case IDYES:
-        return M3U8LoadMode::NewPlaylist;
+        return PlaylistLoadMode::NewPlaylist;
     case IDNO:
-        return M3U8LoadMode::AppendToCurrent;
+        return PlaylistLoadMode::AppendToCurrent;
     default:
-        return M3U8LoadMode::Cancel;
+        return PlaylistLoadMode::Cancel;
     }
 }
 
-void ImportM3U8(HWND window, const std::wstring& filePath)
+void ImportPlaylistFile(HWND window, const std::wstring& filePath)
 {
-    const M3U8LoadMode mode = ChooseM3U8LoadMode(window, filePath);
-    if (mode == M3U8LoadMode::Cancel)
+    const PlaylistLoadMode mode = ChoosePlaylistLoadMode(window, filePath);
+    if (mode == PlaylistLoadMode::Cancel)
     {
         return;
     }
@@ -2478,7 +2485,7 @@ void ImportM3U8(HWND window, const std::wstring& filePath)
     Playlist loadedPlaylist;
     try
     {
-        loadedPlaylist = LoadM3U8(filePath);
+        loadedPlaylist = LoadPlaylist(filePath);
     }
     catch (const std::exception&)
     {
@@ -2487,7 +2494,7 @@ void ImportM3U8(HWND window, const std::wstring& filePath)
         return;
     }
 
-    if (mode == M3U8LoadMode::NewPlaylist)
+    if (mode == PlaylistLoadMode::NewPlaylist)
     {
         loadedPlaylist.groupId = NewPlaylistGroupId;
         playlists.push_back(std::move(loadedPlaylist));
@@ -2597,7 +2604,7 @@ void ImportPlaylistFromDialog(HWND window)
     OPENFILENAMEW dialog{};
     dialog.lStructSize = sizeof(dialog);
     dialog.hwndOwner = window;
-    dialog.lpstrFilter = T(UiText::M3U8FilesFilter);
+    dialog.lpstrFilter = T(UiText::PlaylistFilesFilter);
     dialog.nFilterIndex = 1;
     dialog.lpstrFile = buffer.data();
     dialog.nMaxFile = static_cast<DWORD>(buffer.size());
@@ -2615,7 +2622,7 @@ void ImportPlaylistFromDialog(HWND window)
         }
         return;
     }
-    ImportM3U8(window, buffer.data());
+    ImportPlaylistFile(window, buffer.data());
 }
 
 void HandleDroppedFiles(HWND window, HDROP drop)
@@ -2638,9 +2645,9 @@ void HandleDroppedFiles(HWND window, HDROP drop)
                            static_cast<UINT>(buffer.size()));
 
             const std::wstring path(buffer.data());
-            if (IsM3U8Path(path))
+            if (IsPlaylistPath(path))
             {
-                ImportM3U8(window, path);
+                ImportPlaylistFile(window, path);
                 continue;
             }
             if (IsSupportedAudioPath(path))

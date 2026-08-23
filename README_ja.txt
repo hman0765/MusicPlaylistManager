@@ -1,5 +1,5 @@
 Playlist Manager
-Version 1.0.0
+Version 1.01
 
 English documentation: README.txt
 
@@ -24,7 +24,8 @@ https://github.com/hman0765/MusicPlaylistManager
 主な機能
 
 - プレイリストとプレイリストグループの管理
-- M3U8プレイリストのインポートとエクスポート
+- M3U8とM3Uプレイリストのインポート
+- M3U8プレイリストのエクスポート
 - Windows Explorerからの音声ファイルのドラッグ＆ドロップ
 - TagLibによるメタデータ取得
 - トラックカラムの表示項目と順序のカスタマイズ
@@ -47,9 +48,11 @@ UIの言語を変更する
   対応する音声ファイルをWindows ExplorerからTrackペインへドラッグするか、
   File > Open Audio Files（ファイル > 音声ファイルを開く）を使用します。
 
-M3U8プレイリストをインポートする
+M3U8またはM3Uプレイリストをインポートする
   File > Import Playlist（ファイル > プレイリストをインポート）を使用するか、
-  M3U8ファイルをアプリケーションへドロップします。
+  M3U8またはM3Uファイルをアプリケーションへドロップします。M3Uファイルは
+  UTF-8およびWindows日本語環境で一般的なCP932形式に対応しています。一部の
+  プレイヤーが出力するPercent-EncodingされたUTF-8パスも可能な範囲で復元します。
 
 M3U8プレイリストをエクスポートする
   プレイリストを選択し、File > Export M3U8（ファイル > M3U8をエクスポート）
@@ -101,7 +104,7 @@ Playlist Managerでプレイリストを削除したり、プレイリストか�
 プレイリストファイルだけです。
 
 Get Metadata（メタデータを取得）はタグと音声プロパティを読み取ります。
-Version 1.0.0では、音声ファイルのタグを編集または書き込みません。
+Version 1.01では、音声ファイルのタグを編集または書き込みません。
 
 動作環境
 
