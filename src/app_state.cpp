@@ -300,6 +300,8 @@ std::wstring SerializeState(const AppState& state)
     output += L"  \"language\": ";
     AppendJsonString(output, GetAppLanguageCode(state.language));
     output += L",\n";
+    output += L"  \"expandOnlyOneGroup\": ";
+    output += state.expandOnlyOneGroup ? L"true,\n" : L"false,\n";
     output += L"  \"selectedPlaylistIndex\": " +
               std::to_wstring(state.selectedPlaylistIndex) + L",\n";
     output += L"  \"gui\": {\n";
@@ -981,6 +983,10 @@ AppState DeserializeState(const std::wstring& text)
             TryParseAppLanguage(reader.ReadString(), language);
             state.language = language;
         }
+        else if (name == L"expandOnlyOneGroup")
+        {
+            state.expandOnlyOneGroup = reader.ReadBoolean();
+        }
         else if (name == L"selectedPlaylistIndex") { state.selectedPlaylistIndex = ReadInt(reader); fields |= 1U << 1; }
         else if (name == L"gui") { ReadGui(reader, state); fields |= 1U << 2; }
         else if (name == L"extinfFormat") { ReadExtinfFormat(reader, state); }
@@ -1024,6 +1030,22 @@ AppState DeserializeState(const std::wstring& text)
     int nextGroupId = 1;
     NormalizePlaylistGroups(state.playlistGroups, state.playlists,
                             nextGroupId);
+    if (state.expandOnlyOneGroup)
+    {
+        const std::size_t expandedCount = static_cast<std::size_t>(
+            std::count_if(state.playlistGroups.begin(),
+                          state.playlistGroups.end(),
+                          [](const PlaylistGroup& group) {
+                              return group.expanded;
+                          }));
+        if (expandedCount > 1)
+        {
+            for (PlaylistGroup& group : state.playlistGroups)
+            {
+                group.expanded = false;
+            }
+        }
+    }
     state.version = 2;
 
     state.windowWidth = std::clamp(state.windowWidth, 360, 16384);

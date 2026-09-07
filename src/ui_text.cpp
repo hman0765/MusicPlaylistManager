@@ -34,6 +34,7 @@ Translations{{
     {L"Delete", L"削除"},
     {L"Send To Applications...", L"アプリに送る..."},
     {L"Columns...", L"カラム..."}, {L"EXTINF Format...", L"EXTINF形式..."},
+    {L"Expand Only One Group", L"グループを一つだけ展開"},
     {L"Online Manual...", L"オンラインマニュアル..."},
     {L"About Playlist Manager...", L"Playlist Managerについて..."},
     {L"Playlist", L"プレイリスト"}, {L"Track Columns", L"トラックカラム"},

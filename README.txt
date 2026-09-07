@@ -1,5 +1,5 @@
 Playlist Manager
-Version 1.02
+Version 1.03
 
 Japanese documentation: README_ja.txt
 
@@ -23,6 +23,7 @@ https://github.com/hman0765/MusicPlaylistManager
 MAIN FEATURES
 
 - Playlist and playlist group management
+- Optional single-expanded-group display mode
 - M3U8 and M3U playlist import
 - M3U8 playlist export
 - Audio file drag and drop from Windows Explorer
@@ -69,6 +70,14 @@ Organize playlists
   Use Playlist > Organize Playlists to create groups, move playlists between
   groups, reorder items, or remove playlists.
 
+Group display mode
+  By default, multiple playlist groups can be expanded at the same time.
+  Enable Settings > Expand Only One Group to limit the left playlist pane to
+  at most one expanded group. Enabling it first collapses every group; opening
+  another group then collapses the previously expanded group. The open group
+  can still be collapsed so that no groups are expanded. Disabling the option
+  keeps the current expanded/collapsed state and restores multiple expansion.
+
 SEND TO APPLICATIONS
 
 Use Settings > Send To Applications to register an external player, tag
@@ -100,7 +109,7 @@ Deleting a playlist or removing a track from Playlist Manager does not delete
 the actual audio file from disk. Playlist Manager changes only its internal
 playlist data and exported playlist files.
 
-Get Metadata reads tags and audio properties. Version 1.02 does not edit or
+Get Metadata reads tags and audio properties. Version 1.03 does not edit or
 write tags to audio files.
 
 SYSTEM REQUIREMENTS

@@ -67,6 +67,7 @@ struct AppState
         ExtinfFormatPreset::ArtistTitle;
     std::wstring customExtinfFormat = DefaultCustomExtinfFormat;
     AppLanguage language = AppLanguage::English;
+    bool expandOnlyOneGroup = false;
 };
 
 enum class AppStateLoadResult

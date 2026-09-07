@@ -16,7 +16,7 @@ enum class UiText
     NewPlaylist, RenamePlaylist, DeletePlaylist, OrganizePlaylists,
     GetMetadata, GettingMetadata, MetadataWorkerStartFailed,
     OpenInExplorer, Properties, SendTo, Delete,
-    SendToApplications, Columns, ExtinfFormat, OnlineManual,
+    SendToApplications, Columns, ExtinfFormat, ExpandOnlyOneGroup, OnlineManual,
     AboutPlaylistManager,
     PlaylistHeader, TrackColumnsTitle,
     TitleColumn, ArtistColumn, AlbumColumn, DurationColumn, CommentColumn,

@@ -70,6 +70,7 @@ constexpr UINT CommandAbout = 1016;
 constexpr UINT CommandLanguageEnglish = 1017;
 constexpr UINT CommandLanguageJapanese = 1018;
 constexpr UINT CommandOnlineManual = 1019;
+constexpr UINT CommandExpandOnlyOneGroup = 1020;
 constexpr UINT SendToApplicationCommandBase = 12000;
 constexpr UINT MaximumWindowsCommandLineLength = 32767;
 constexpr UINT MessageRefreshPlaylistList = WM_APP + 1;
@@ -191,6 +192,7 @@ ExtinfFormatPreset extinfFormatPreset = ExtinfFormatPreset::ArtistTitle;
 std::wstring customExtinfFormat = DefaultCustomExtinfFormat;
 AppLanguage activeLanguage = AppLanguage::English;
 AppLanguage languageSetting = AppLanguage::English;
+bool expandOnlyOneGroup = false;
 bool isDraggingSplitter = false;
 int splitterDragOffset = 0;
 int splitterXAtDragStart = 240;
@@ -320,6 +322,7 @@ AppState CaptureCurrentAppState()
     state.extinfFormatPreset = extinfFormatPreset;
     state.customExtinfFormat = customExtinfFormat;
     state.language = languageSetting;
+    state.expandOnlyOneGroup = expandOnlyOneGroup;
     return state;
 }
 
@@ -355,6 +358,7 @@ void ApplyLoadedAppState(AppState state)
     customExtinfFormat = std::move(state.customExtinfFormat);
     activeLanguage = state.language;
     languageSetting = state.language;
+    expandOnlyOneGroup = state.expandOnlyOneGroup;
 }
 
 void ResetToDefaultAppState()
@@ -375,6 +379,7 @@ void ResetToDefaultAppState()
     customExtinfFormat = DefaultCustomExtinfFormat;
     activeLanguage = AppLanguage::English;
     languageSetting = AppLanguage::English;
+    expandOnlyOneGroup = false;
     appStateDirty = false;
 }
 
@@ -1297,6 +1302,9 @@ bool CreateMainMenuBar(HWND window)
                 T(UiText::Columns));
     AppendMenuW(settingsMenu, MF_STRING, CommandExtinfFormat,
                 T(UiText::ExtinfFormat));
+    AppendMenuW(settingsMenu,
+                MF_STRING | (expandOnlyOneGroup ? MF_CHECKED : MF_UNCHECKED),
+                CommandExpandOnlyOneGroup, T(UiText::ExpandOnlyOneGroup));
 
     AppendMenuW(helpMenu, MF_STRING, CommandOnlineManual,
                 T(UiText::OnlineManual));
@@ -2993,6 +3001,23 @@ void CreateOrganizerGroup()
     if (groupId < 0)
     {
         return;
+    }
+    if (expandOnlyOneGroup)
+    {
+        const bool anotherGroupIsExpanded = std::any_of(
+            playlistGroups.begin(), playlistGroups.end(),
+            [groupId](const PlaylistGroup& group) {
+                return group.id != groupId && group.expanded;
+            });
+        if (anotherGroupIsExpanded)
+        {
+            PlaylistGroup* newGroup =
+                FindPlaylistGroupById(playlistGroups, groupId);
+            if (newGroup != nullptr)
+            {
+                newGroup->expanded = false;
+            }
+        }
     }
     selectedOrganizerGroupIndex =
         static_cast<int>(playlistGroups.size()) - 1;
@@ -5160,6 +5185,24 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         case CommandExtinfFormat:
             ShowExtinfFormatSettings(window);
             return 0;
+        case CommandExpandOnlyOneGroup:
+        {
+            expandOnlyOneGroup = !expandOnlyOneGroup;
+            if (expandOnlyOneGroup)
+            {
+                for (PlaylistGroup& group : playlistGroups)
+                {
+                    group.expanded = false;
+                }
+                RefreshPlaylistList(playlistListView);
+            }
+            CheckMenuItem(
+                settingsMenu, CommandExpandOnlyOneGroup,
+                MF_BYCOMMAND |
+                    (expandOnlyOneGroup ? MF_CHECKED : MF_UNCHECKED));
+            MarkAppStateDirty();
+            return 0;
+        }
         case CommandOnlineManual:
             OpenOnlineManual(window);
             return 0;
@@ -5410,7 +5453,18 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
         {
             PlaylistGroup& group =
                 playlistGroups[static_cast<std::size_t>(groupIndex)];
-            group.expanded = !group.expanded;
+            if (expandOnlyOneGroup && !group.expanded)
+            {
+                for (PlaylistGroup& otherGroup : playlistGroups)
+                {
+                    otherGroup.expanded = false;
+                }
+                group.expanded = true;
+            }
+            else
+            {
+                group.expanded = !group.expanded;
+            }
             MarkAppStateDirty();
             RefreshPlaylistList(playlistListView);
         }
