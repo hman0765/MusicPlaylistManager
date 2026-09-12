@@ -12,10 +12,10 @@ playlist data separate from the audio files on disk.
 LINKS
 
 Official Website:
-https://app2026kak.netlify.app/playlist-manager/
+https://applications-7m9.pages.dev/playlist-manager/
 
 Online Manual:
-https://app2026kak.netlify.app/playlist-manager/manual
+https://applications-7m9.pages.dev/playlist-manager/manual
 
 Source Code:
 https://github.com/hman0765/MusicPlaylistManager

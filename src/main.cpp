@@ -46,7 +46,7 @@ constexpr wchar_t MetadataProgressWindowClassName[] =
     L"MusicPlaylistManagerMetadataProgressWindow";
 constexpr wchar_t WindowTitle[] = L"Music Playlist Manager";
 constexpr wchar_t OnlineManualUrl[] =
-    L"https://app2026kak.netlify.app/playlist-manager/manual";
+    L"https://applications-7m9.pages.dev/playlist-manager/manual";
 constexpr int SplitterWidth = 6;
 constexpr int MinimumPaneWidth = 120;
 constexpr int MinimumWindowWidth = 360;

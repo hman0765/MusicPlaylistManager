@@ -13,10 +13,10 @@ Playlist Managerは、音楽プレイリストの管理とM3U8プレイリスト
 リンク
 
 公式サイト:
-https://app2026kak.netlify.app/playlist-manager/
+https://applications-7m9.pages.dev/playlist-manager/
 
 オンラインマニュアル:
-https://app2026kak.netlify.app/playlist-manager/manual
+https://applications-7m9.pages.dev/playlist-manager/manual
 
 ソースコード:
 https://github.com/hman0765/MusicPlaylistManager
